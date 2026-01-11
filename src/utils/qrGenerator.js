@@ -90,6 +90,10 @@ export async function generateTicketImage(ticketData, qrDataURL) {
     ctx.fillText(ticketData.tipoEntrada || '', 20, yPos);
     yPos += 25;
     ctx.fillText(ticketData.precio || 'Gratis', 20, yPos);
+    yPos += 25;
+    // Cantidad de boletas
+    const cantidadBoletas = ticketData.cantidadBoletas || 1;
+    ctx.fillText(`Cantidad: ${cantidadBoletas} ${cantidadBoletas === 1 ? 'boleta' : 'boletas'}`, 20, yPos);
     yPos += 40;
     
     // Pedido por
