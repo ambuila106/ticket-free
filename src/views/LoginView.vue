@@ -14,6 +14,7 @@
         <span v-else>Iniciando sesión...</span>
       </button>
       <p v-if="error" class="error">{{ error }}</p>
+      <p class="credit">Creada por <strong>Brandon Ambuila</strong></p>
     </div>
   </div>
 </template>
@@ -105,6 +106,19 @@ h1 {
   color: #e74c3c;
   margin-top: 15px;
   font-size: 14px;
+}
+
+.credit {
+  margin-top: 25px;
+  color: #999;
+  font-size: 13px;
+  padding-top: 20px;
+  border-top: 1px solid #eee;
+}
+
+.credit strong {
+  color: #667eea;
+  font-weight: 600;
 }
 
 /* Responsive Mobile */
