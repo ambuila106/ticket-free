@@ -58,6 +58,7 @@ import { ref, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { authService } from '../services/authService';
 import { databaseService } from '../services/databaseService';
+import { permissionService } from '../services/permissionService';
 import { QRReader } from '../utils/qrReader';
 
 const route = useRoute();
@@ -135,6 +136,31 @@ const stopScanner = async () => {
 
 const markAsDelivered = async () => {
   if (!scannedTicket.value) return;
+
+  // Verificar permisos
+  const user = authService.getCurrentUser();
+  if (!user) {
+    error.value = 'Usuario no autenticado';
+    return;
+  }
+
+  // Verificar si es el dueño o tiene permiso de leerQR
+  const isOwner = user.uid === scannedTicket.value.uid;
+  let hasPermission = isOwner;
+
+  if (!isOwner) {
+    hasPermission = await permissionService.checkCollaboratorPermission(
+      scannedTicket.value.uid,
+      scannedTicket.value.discotecaId,
+      scannedTicket.value.eventoId,
+      'leerQR'
+    );
+  }
+
+  if (!hasPermission) {
+    error.value = 'No tienes permiso para cambiar el estado de este ticket';
+    return;
+  }
 
   try {
     await databaseService.updateTicketStatus(

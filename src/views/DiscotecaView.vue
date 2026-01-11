@@ -114,9 +114,30 @@ onUnmounted(() => {
 const createEvento = async () => {
   if (!user.value) return;
   
-  await databaseService.createEvento(user.value.uid, discotecaId, newEvento.value);
-  showCreateModal.value = false;
-  newEvento.value = { nombre: '', fecha: '', ubicacion: '', descripcion: '' };
+  // Validar datos
+  if (!newEvento.value.nombre || newEvento.value.nombre.trim().length === 0) {
+    alert('El nombre del evento es requerido');
+    return;
+  }
+  
+  if (newEvento.value.nombre.length > 200) {
+    alert('El nombre del evento es demasiado largo (máximo 200 caracteres)');
+    return;
+  }
+  
+  try {
+    await databaseService.createEvento(user.value.uid, discotecaId, {
+      nombre: newEvento.value.nombre.trim().substring(0, 200),
+      fecha: newEvento.value.fecha ? newEvento.value.fecha.trim().substring(0, 100) : '',
+      ubicacion: newEvento.value.ubicacion ? newEvento.value.ubicacion.trim().substring(0, 200) : '',
+      descripcion: newEvento.value.descripcion ? newEvento.value.descripcion.trim().substring(0, 500) : ''
+    });
+    showCreateModal.value = false;
+    newEvento.value = { nombre: '', fecha: '', ubicacion: '', descripcion: '' };
+  } catch (error) {
+    console.error('Error creando evento:', error);
+    alert('Error al crear el evento');
+  }
 };
 
 const goToEvento = (eventoId) => {

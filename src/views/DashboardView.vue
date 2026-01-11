@@ -105,16 +105,32 @@ onUnmounted(() => {
 const createDiscoteca = async () => {
   if (!user.value) return;
   
-  const discotecaData = {
-    id: Date.now().toString(),
-    nombre: newDiscoteca.value.nombre,
-    descripcion: newDiscoteca.value.descripcion,
-    ubicacion: newDiscoteca.value.ubicacion
-  };
+  // Validar datos
+  if (!newDiscoteca.value.nombre || newDiscoteca.value.nombre.trim().length === 0) {
+    alert('El nombre de la discoteca es requerido');
+    return;
+  }
   
-  await databaseService.createDiscoteca(user.value.uid, discotecaData);
-  showCreateModal.value = false;
-  newDiscoteca.value = { nombre: '', descripcion: '', ubicacion: '' };
+  if (newDiscoteca.value.nombre.length > 200) {
+    alert('El nombre es demasiado largo (máximo 200 caracteres)');
+    return;
+  }
+  
+  try {
+    const discotecaData = {
+      id: Date.now().toString(),
+      nombre: newDiscoteca.value.nombre.trim().substring(0, 200),
+      descripcion: newDiscoteca.value.descripcion ? newDiscoteca.value.descripcion.trim().substring(0, 500) : '',
+      ubicacion: newDiscoteca.value.ubicacion ? newDiscoteca.value.ubicacion.trim().substring(0, 200) : ''
+    };
+    
+    await databaseService.createDiscoteca(user.value.uid, discotecaData);
+    showCreateModal.value = false;
+    newDiscoteca.value = { nombre: '', descripcion: '', ubicacion: '' };
+  } catch (error) {
+    console.error('Error creando discoteca:', error);
+    alert('Error al crear la discoteca');
+  }
 };
 
 const goToDiscoteca = (discotecaId) => {

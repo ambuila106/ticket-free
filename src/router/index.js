@@ -52,19 +52,31 @@ const router = createRouter({
 });
 
 // Guard de navegación
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const user = authService.getCurrentUser();
   const userRole = localStorage.getItem('userRole');
 
+  // Verificar autenticación
   if (to.meta.requiresAuth && !user) {
     next('/');
-  } else if (to.meta.requiresRole && userRole !== to.meta.requiresRole) {
-    next('/select-role');
-  } else if (to.path === '/' && user) {
-    next('/select-role');
-  } else {
-    next();
+    return;
   }
+
+  // Verificar rol
+  if (to.meta.requiresRole && userRole !== to.meta.requiresRole) {
+    next('/select-role');
+    return;
+  }
+
+  // Redirigir a selección de rol si está autenticado y va al login
+  if (to.path === '/' && user) {
+    next('/select-role');
+    return;
+  }
+
+  // Para rutas de eventos, la verificación de permisos de colaborador
+  // se hace en el componente EventoView
+  next();
 });
 
 export default router;

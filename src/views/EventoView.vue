@@ -221,7 +221,9 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { authService } from '../services/authService';
 import { databaseService } from '../services/databaseService';
+import { permissionService } from '../services/permissionService';
 import { generateQRCode, generateTicketImage } from '../utils/qrGenerator';
+import { validators, sanitizeInput, sanitizeNumber } from '../utils/validation';
 
 const route = useRoute();
 const router = useRouter();
@@ -337,11 +339,50 @@ onUnmounted(() => {
 const createTicket = async () => {
   if (!user.value) return;
   
+  // Validar permisos si es colaborador
+  if (!isOrganizador.value) {
+    const canCreate = await permissionService.checkCollaboratorPermission(
+      ownerUid.value,
+      discotecaId,
+      eventoId,
+      'crearTickets'
+    );
+    if (!canCreate) {
+      alert('No tienes permiso para crear tickets');
+      return;
+    }
+  }
+  
+  // Validar y sanitizar datos
+  if (!validators.text(newTicket.value.nombreCliente, 100)) {
+    alert('Nombre del cliente inválido. Debe tener entre 1 y 100 caracteres.');
+    return;
+  }
+  
+  if (!validators.phone(newTicket.value.telefono)) {
+    alert('Teléfono inválido. Debe contener entre 7 y 15 dígitos.');
+    return;
+  }
+  
+  if (!validators.cantidadBoletas(newTicket.value.cantidadBoletas)) {
+    alert('Cantidad de boletas debe ser entre 1 y 100');
+    return;
+  }
+  
+  if (!validators.precio(newTicket.value.precio)) {
+    alert('Precio inválido. Debe ser un número válido o "Gratis".');
+    return;
+  }
+  
   creatingTicket.value = true;
   
   try {
     const ticketData = {
-      ...newTicket.value,
+      nombreCliente: sanitizeInput(newTicket.value.nombreCliente),
+      telefono: sanitizeInput(newTicket.value.telefono),
+      tipoEntrada: sanitizeInput(newTicket.value.tipoEntrada || ''),
+      precio: sanitizeInput(newTicket.value.precio || 'Gratis'),
+      cantidadBoletas: sanitizeNumber(newTicket.value.cantidadBoletas, 1, 100),
       eventoNombre: evento.value.nombre,
       fecha: evento.value.fecha,
       ubicacion: evento.value.ubicacion
@@ -397,6 +438,26 @@ const downloadTicket = () => {
 const updateStatus = async (ticketId, nuevoEstado) => {
   if (!ownerUid.value) return;
   
+  // Validar estado permitido
+  if (!validators.estado(nuevoEstado)) {
+    alert('Estado inválido');
+    return;
+  }
+  
+  // Verificar permisos si es colaborador
+  if (!isOrganizador.value) {
+    const canReadQR = await permissionService.checkCollaboratorPermission(
+      ownerUid.value,
+      discotecaId,
+      eventoId,
+      'leerQR'
+    );
+    if (!canReadQR) {
+      alert('No tienes permiso para cambiar estados');
+      return;
+    }
+  }
+  
   await databaseService.updateTicketStatus(
     ownerUid.value,
     discotecaId,
@@ -407,13 +468,28 @@ const updateStatus = async (ticketId, nuevoEstado) => {
 };
 
 const addCollaborator = async () => {
-  if (!ownerUid.value) return;
+  if (!ownerUid.value || !isOrganizador.value) {
+    alert('Solo los organizadores pueden agregar colaboradores');
+    return;
+  }
+  
+  // Validar email
+  if (!validators.email(collaboratorEmail.value)) {
+    alert('Email inválido');
+    return;
+  }
+  
+  // No permitir agregarse a sí mismo
+  if (collaboratorEmail.value === user.value.email) {
+    alert('No puedes agregarte como colaborador');
+    return;
+  }
   
   await databaseService.addCollaborator(
     ownerUid.value,
     discotecaId,
     eventoId,
-    collaboratorEmail.value,
+    sanitizeInput(collaboratorEmail.value),
     collaboratorPermisos.value
   );
   
@@ -427,7 +503,21 @@ const addCollaborator = async () => {
   alert('Colaborador agregado exitosamente');
 };
 
-const exportData = () => {
+const exportData = async () => {
+  // Verificar permisos si es colaborador
+  if (!isOrganizador.value) {
+    const canViewReports = await permissionService.checkCollaboratorPermission(
+      ownerUid.value,
+      discotecaId,
+      eventoId,
+      'verReportes'
+    );
+    if (!canViewReports) {
+      alert('No tienes permiso para ver reportes');
+      return;
+    }
+  }
+  
   const ticketsArray = Object.entries(tickets.value).map(([id, ticket]) => ({
     id,
     ...ticket

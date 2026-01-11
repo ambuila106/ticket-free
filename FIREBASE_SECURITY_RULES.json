@@ -1,0 +1,35 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "$uid === auth.uid",
+        ".write": "$uid === auth.uid",
+        "discotecas": {
+          "$discotecaId": {
+            "eventos": {
+              "$eventoId": {
+                "colaboradores": {
+                  "$collaboratorKey": {
+                    ".read": "$uid === auth.uid || $collaboratorKey === auth.uid.replace(/[@.]/g, '_')",
+                    ".write": "$uid === auth.uid",
+                    ".validate": "newData.hasChildren(['email', 'permisos', 'addedAt']) && newData.child('email').val().matches(/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/)"
+                  }
+                },
+                "tickets": {
+                  ".read": "$uid === auth.uid || (root.child('users').child($uid).child('discotecas').child($discotecaId).child('eventos').child($eventoId).child('colaboradores').child(auth.uid.replace(/[@.]/g, '_')).exists())",
+                  ".write": "$uid === auth.uid || (root.child('users').child($uid).child('discotecas').child($discotecaId).child('eventos').child($eventoId).child('colaboradores').child(auth.uid.replace(/[@.]/g, '_')).child('permisos').child('crearTickets').val() === true)",
+                  "$ticketId": {
+                    ".validate": "newData.hasChildren(['secureCode', 'estado', 'createdAt', 'cantidadBoletas']) && newData.child('estado').val().matches(/^(pagado|entregado|cancelado)$/) && newData.child('cantidadBoletas').val() > 0 && newData.child('cantidadBoletas').val() <= 100 && newData.child('secureCode').isString() && newData.child('secureCode').val().length > 0"
+                  }
+                },
+                ".validate": "newData.hasChildren(['nombre', 'fecha', 'createdAt'])"
+              }
+            },
+            ".validate": "newData.hasChildren(['nombre', 'createdAt'])"
+          }
+        }
+      }
+    }
+  }
+}
+
