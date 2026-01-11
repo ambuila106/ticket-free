@@ -203,6 +203,9 @@
               <p><strong>Boletas:</strong> {{ ticket.cantidadBoletas || 1 }}</p>
               <p><strong>Precio:</strong> {{ ticket.precio || 'Gratis' }}</p>
             </div>
+            <div class="ticket-list-actions">
+              <button @click="viewTicketFromList(ticket, id)" class="view-qr-btn">Ver QR</button>
+            </div>
           </div>
           <div v-if="filteredTickets.length === 0" class="no-results">
             <p>No se encontraron tickets</p>
@@ -416,6 +419,21 @@ const createTicket = async () => {
 };
 
 const viewTicket = async (ticket, ticketId) => {
+  selectedTicket.value = ticket;
+  const qrDataURL = await generateQRCode(ticket.secureCode);
+  const imageURL = await generateTicketImage(
+    { ...ticket, eventoNombre: evento.value.nombre, fecha: evento.value.fecha, ubicacion: evento.value.ubicacion },
+    qrDataURL
+  );
+  ticketImage.value = imageURL;
+  showTicketView.value = true;
+};
+
+const viewTicketFromList = async (ticket, ticketId) => {
+  // Cerrar el modal de lista primero
+  showTicketsList.value = false;
+  
+  // Generar QR e imagen
   selectedTicket.value = ticket;
   const qrDataURL = await generateQRCode(ticket.secureCode);
   const imageURL = await generateTicketImage(
@@ -1080,6 +1098,28 @@ const goBack = () => {
   margin: 5px 0;
   color: #666;
   font-size: 13px;
+}
+
+.ticket-list-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #eee;
+}
+
+.view-qr-btn {
+  width: 100%;
+  padding: 8px 16px;
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.3s;
+}
+
+.view-qr-btn:hover {
+  background: #5568d3;
 }
 
 .no-results {
