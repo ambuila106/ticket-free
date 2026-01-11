@@ -11,6 +11,13 @@
         >
           + Colaborador
         </button>
+        <button 
+          v-if="isOrganizador" 
+          @click="openBitacora" 
+          class="bitacora-btn"
+        >
+          📋 Bitácora
+        </button>
         <button @click="goToScanner" class="scanner-btn">📷 Leer QR</button>
       </div>
     </header>
@@ -216,6 +223,70 @@
         </div>
       </div>
     </div>
+
+    <!-- Modal Bitácora -->
+    <div v-if="showBitacoraModal" class="modal-overlay" @click="showBitacoraModal = false">
+      <div class="modal bitacora-modal" @click.stop>
+        <h2>Bitácora del Evento</h2>
+        <div class="bitacora-search">
+          <input 
+            v-model="bitacoraSearchQuery" 
+            type="text" 
+            placeholder="Buscar por usuario, acción..." 
+            class="search-input"
+          />
+        </div>
+        <div class="bitacora-list-container">
+          <div v-if="loadingBitacora" class="loading">Cargando bitácora...</div>
+          <div v-else-if="filteredBitacora.length === 0" class="empty-state">
+            <p>No hay registros en la bitácora</p>
+          </div>
+          <div v-else>
+            <div 
+              v-for="(log, index) in filteredBitacora" 
+              :key="index"
+              class="bitacora-item"
+            >
+              <div class="bitacora-header">
+                <div class="bitacora-user">
+                  <strong>{{ log.usuario?.nombre || log.usuario?.email }}</strong>
+                  <span class="bitacora-email">{{ log.usuario?.email }}</span>
+                </div>
+                <span class="bitacora-time">{{ log.fecha }}</span>
+              </div>
+              <div class="bitacora-action">
+                <span class="action-badge" :class="getActionClass(log.accion)">
+                  {{ getActionLabel(log.accion) }}
+                </span>
+              </div>
+              <div v-if="log.detalles" class="bitacora-details">
+                <p v-if="log.detalles.ticketId">
+                  <strong>Ticket:</strong> {{ log.detalles.ticketCode || log.detalles.ticketId }}
+                </p>
+                <p v-if="log.detalles.cliente">
+                  <strong>Cliente:</strong> {{ log.detalles.cliente }}
+                </p>
+                <p v-if="log.detalles.estadoAnterior && log.detalles.estadoNuevo">
+                  <strong>Estado:</strong> {{ log.detalles.estadoAnterior }} → {{ log.detalles.estadoNuevo }}
+                </p>
+                <p v-if="log.detalles.colaboradorEmail">
+                  <strong>Colaborador:</strong> {{ log.detalles.colaboradorEmail }}
+                </p>
+                <p v-if="log.detalles.cantidadBoletas">
+                  <strong>Boletas:</strong> {{ log.detalles.cantidadBoletas }}
+                </p>
+                <p v-if="log.detalles.precio">
+                  <strong>Precio:</strong> {{ log.detalles.precio }}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button @click="showBitacoraModal = false" class="close-btn">Cerrar</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -225,6 +296,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { authService } from '../services/authService';
 import { databaseService } from '../services/databaseService';
 import { permissionService } from '../services/permissionService';
+import { bitacoraService } from '../services/bitacoraService';
 import { generateQRCode, generateTicketImage } from '../utils/qrGenerator';
 import { validators, sanitizeInput, sanitizeNumber } from '../utils/validation';
 
@@ -240,11 +312,15 @@ const showTicketModal = ref(false);
 const showTicketView = ref(false);
 const showCollaboratorModal = ref(false);
 const showTicketsList = ref(false);
+const showBitacoraModal = ref(false);
 const creatingTicket = ref(false);
 const selectedTicket = ref(null);
 const ticketImage = ref(null);
 const collaboratorEmail = ref('');
 const searchQuery = ref('');
+const bitacoraSearchQuery = ref('');
+const bitacora = ref([]);
+const loadingBitacora = ref(false);
 const collaboratorPermisos = ref({
   crearTickets: true,
   leerQR: true,
@@ -262,6 +338,7 @@ const newTicket = ref({
 });
 
 let unsubscribe = null;
+let unsubscribeBitacora = null;
 
 const totalTickets = computed(() => Object.keys(tickets.value).length);
 
@@ -290,6 +367,43 @@ const filteredTickets = computed(() => {
       ticket.tipoEntrada?.toLowerCase().includes(query)
     );
 });
+
+const filteredBitacora = computed(() => {
+  if (!bitacoraSearchQuery.value) {
+    return bitacora.value;
+  }
+  
+  const query = bitacoraSearchQuery.value.toLowerCase();
+  return bitacora.value.filter(log => 
+    log.usuario?.nombre?.toLowerCase().includes(query) ||
+    log.usuario?.email?.toLowerCase().includes(query) ||
+    getActionLabel(log.accion).toLowerCase().includes(query) ||
+    log.detalles?.cliente?.toLowerCase().includes(query) ||
+    log.detalles?.ticketCode?.toLowerCase().includes(query)
+  );
+});
+
+const getActionLabel = (accion) => {
+  const labels = {
+    'ticket_creado': 'Ticket Creado',
+    'qr_escaneado': 'QR Escaneado',
+    'estado_cambiado': 'Estado Cambiado',
+    'colaborador_agregado': 'Colaborador Agregado',
+    'ticket_cancelado': 'Ticket Cancelado'
+  };
+  return labels[accion] || accion;
+};
+
+const getActionClass = (accion) => {
+  const classes = {
+    'ticket_creado': 'action-created',
+    'qr_escaneado': 'action-scanned',
+    'estado_cambiado': 'action-changed',
+    'colaborador_agregado': 'action-collaborator',
+    'ticket_cancelado': 'action-cancelled'
+  };
+  return classes[accion] || '';
+};
 
 onMounted(async () => {
   user.value = authService.getCurrentUser();
@@ -330,12 +444,28 @@ onMounted(async () => {
         loading.value = false;
       }
     );
+
+    // Suscribirse a bitácora solo si es organizador
+    if (isOrganizador.value) {
+      unsubscribeBitacora = bitacoraService.subscribeToBitacora(
+        ownerUid.value,
+        discotecaId,
+        eventoId,
+        (data) => {
+          bitacora.value = data;
+          loadingBitacora.value = false;
+        }
+      );
+    }
   }
 });
 
 onUnmounted(() => {
   if (unsubscribe) {
     unsubscribe();
+  }
+  if (unsubscribeBitacora) {
+    unsubscribeBitacora();
   }
 });
 
@@ -396,6 +526,23 @@ const createTicket = async () => {
       discotecaId,
       eventoId,
       ticketData
+    );
+    
+    // Registrar en bitácora
+    await bitacoraService.registrarAccion(
+      ownerUid.value,
+      discotecaId,
+      eventoId,
+      'ticket_creado',
+      {
+        ticketId: result.ticketId,
+        ticketCode: result.secureCode.substring(0, 12),
+        cliente: ticketData.nombreCliente,
+        telefono: ticketData.telefono,
+        cantidadBoletas: ticketData.cantidadBoletas,
+        precio: ticketData.precio,
+        tipoEntrada: ticketData.tipoEntrada
+      }
     );
     
     // Generar QR e imagen
@@ -476,12 +623,31 @@ const updateStatus = async (ticketId, nuevoEstado) => {
     }
   }
   
+  // Obtener estado anterior del ticket
+  const ticket = tickets.value[ticketId];
+  const estadoAnterior = ticket?.estado || 'pagado';
+  
   await databaseService.updateTicketStatus(
     ownerUid.value,
     discotecaId,
     eventoId,
     ticketId,
     nuevoEstado
+  );
+  
+  // Registrar en bitácora
+  await bitacoraService.registrarAccion(
+    ownerUid.value,
+    discotecaId,
+    eventoId,
+    nuevoEstado === 'cancelado' ? 'ticket_cancelado' : 'estado_cambiado',
+    {
+      ticketId,
+      ticketCode: ticket?.secureCode?.substring(0, 12) || '',
+      cliente: ticket?.nombreCliente || '',
+      estadoAnterior,
+      estadoNuevo: nuevoEstado
+    }
   );
 };
 
@@ -511,6 +677,18 @@ const addCollaborator = async () => {
     collaboratorPermisos.value
   );
   
+  // Registrar en bitácora
+  await bitacoraService.registrarAccion(
+    ownerUid.value,
+    discotecaId,
+    eventoId,
+    'colaborador_agregado',
+    {
+      colaboradorEmail: collaboratorEmail.value,
+      permisos: collaboratorPermisos.value
+    }
+  );
+  
   showCollaboratorModal.value = false;
   collaboratorEmail.value = '';
   collaboratorPermisos.value = {
@@ -519,6 +697,23 @@ const addCollaborator = async () => {
     verReportes: false
   };
   alert('Colaborador agregado exitosamente');
+};
+
+const openBitacora = async () => {
+  if (!isOrganizador.value || !ownerUid.value) return;
+  
+  showBitacoraModal.value = true;
+  loadingBitacora.value = true;
+  
+  try {
+    const logs = await bitacoraService.getBitacora(ownerUid.value, discotecaId, eventoId);
+    bitacora.value = logs;
+  } catch (error) {
+    console.error('Error cargando bitácora:', error);
+    alert('Error al cargar la bitácora');
+  } finally {
+    loadingBitacora.value = false;
+  }
 };
 
 const exportData = async () => {
@@ -694,6 +889,11 @@ const goBack = () => {
 
 .scanner-btn {
   background: #28a745;
+  color: white;
+}
+
+.bitacora-btn {
+  background: #6c757d;
   color: white;
 }
 
@@ -1013,7 +1213,8 @@ const goBack = () => {
   cursor: pointer;
 }
 
-.tickets-list-modal {
+.tickets-list-modal,
+.bitacora-modal {
   max-width: 800px;
   max-height: 90vh;
 }
@@ -1134,6 +1335,103 @@ const goBack = () => {
   margin-top: 20px;
   padding-top: 20px;
   border-top: 1px solid #eee;
+}
+
+.bitacora-search {
+  margin-bottom: 20px;
+}
+
+.bitacora-list-container {
+  max-height: 500px;
+  overflow-y: auto;
+  margin-bottom: 20px;
+}
+
+.bitacora-item {
+  background: #f9f9f9;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  border-left: 4px solid #667eea;
+}
+
+.bitacora-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.bitacora-user {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bitacora-user strong {
+  color: #333;
+  font-size: 15px;
+}
+
+.bitacora-email {
+  color: #666;
+  font-size: 12px;
+}
+
+.bitacora-time {
+  color: #999;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.bitacora-action {
+  margin-bottom: 10px;
+}
+
+.action-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.action-badge.action-created {
+  background: #d4edda;
+  color: #155724;
+}
+
+.action-badge.action-scanned {
+  background: #cfe2ff;
+  color: #084298;
+}
+
+.action-badge.action-changed {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.action-badge.action-collaborator {
+  background: #e7f3ff;
+  color: #0c5460;
+}
+
+.action-badge.action-cancelled {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.bitacora-details {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #eee;
+}
+
+.bitacora-details p {
+  margin: 5px 0;
+  color: #666;
+  font-size: 13px;
 }
 
 .form-actions {
@@ -1326,13 +1624,24 @@ const goBack = () => {
     width: 100%;
   }
 
-  .tickets-list-modal {
+  .tickets-list-modal,
+  .bitacora-modal {
     width: 95%;
     max-height: 95vh;
   }
 
-  .tickets-list-container {
+  .tickets-list-container,
+  .bitacora-list-container {
     max-height: 400px;
+  }
+
+  .bitacora-header {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .bitacora-time {
+    align-self: flex-start;
   }
 }
 

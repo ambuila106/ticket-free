@@ -59,6 +59,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { authService } from '../services/authService';
 import { databaseService } from '../services/databaseService';
 import { permissionService } from '../services/permissionService';
+import { bitacoraService } from '../services/bitacoraService';
 import { QRReader } from '../utils/qrReader';
 
 const route = useRoute();
@@ -102,6 +103,21 @@ const startScanner = async () => {
         // Verificar que el ticket pertenece a este evento
         if (result.discotecaId === discotecaId && result.eventoId === eventoId) {
           scannedTicket.value = result;
+          
+          // Registrar escaneo en bitácora
+          await bitacoraService.registrarAccion(
+            result.uid,
+            result.discotecaId,
+            result.eventoId,
+            'qr_escaneado',
+            {
+              ticketId: result.ticketId,
+              ticketCode: result.ticket.secureCode.substring(0, 12),
+              cliente: result.ticket.nombreCliente,
+              estado: result.ticket.estado
+            }
+          );
+          
           await qrReader.stop();
           scanning.value = false;
         } else {
@@ -172,6 +188,22 @@ const markAsDelivered = async () => {
     );
 
     scannedTicket.value.ticket.estado = 'entregado';
+    
+    // Registrar cambio de estado en bitácora
+    await bitacoraService.registrarAccion(
+      scannedTicket.value.uid,
+      scannedTicket.value.discotecaId,
+      scannedTicket.value.eventoId,
+      'estado_cambiado',
+      {
+        ticketId: scannedTicket.value.ticketId,
+        ticketCode: scannedTicket.value.ticket.secureCode.substring(0, 12),
+        cliente: scannedTicket.value.ticket.nombreCliente,
+        estadoAnterior: 'pagado',
+        estadoNuevo: 'entregado'
+      }
+    );
+    
     alert('Ticket marcado como entregado exitosamente');
   } catch (err) {
     error.value = 'Error al actualizar el estado: ' + err.message;
