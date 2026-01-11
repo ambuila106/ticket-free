@@ -169,12 +169,17 @@ export const databaseService = {
   // ========== COLABORADORES ==========
 
   // Agregar colaborador a un evento (usando email codificado como clave)
-  async addCollaborator(uid, discotecaId, eventoId, collaboratorEmail) {
+  async addCollaborator(uid, discotecaId, eventoId, collaboratorEmail, permisos = {}) {
     // Codificar email para usar como clave (reemplazar caracteres especiales)
     const collaboratorKey = collaboratorEmail.replace(/[@.]/g, '_');
     const collaboratorRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/colaboradores/${collaboratorKey}`);
     await set(collaboratorRef, {
       email: collaboratorEmail,
+      permisos: {
+        crearTickets: permisos.crearTickets !== undefined ? permisos.crearTickets : true,
+        leerQR: permisos.leerQR !== undefined ? permisos.leerQR : true,
+        verReportes: permisos.verReportes !== undefined ? permisos.verReportes : false
+      },
       addedAt: Date.now()
     });
   },

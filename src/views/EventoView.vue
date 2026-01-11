@@ -24,13 +24,16 @@
       <div class="tickets-section">
         <div class="section-header">
           <h2>Tickets</h2>
-          <button @click="showTicketModal = true" class="create-ticket-btn">
-            + Crear Ticket
-          </button>
+          <div class="header-actions-right">
+            <button @click="exportData" class="export-btn">📊 Exportar</button>
+            <button @click="showTicketModal = true" class="create-ticket-btn">
+              + Crear Ticket
+            </button>
+          </div>
         </div>
 
         <div class="tickets-stats">
-          <div class="stat-card">
+          <div class="stat-card clickable" @click="showTicketsList = true">
             <span class="stat-label">Total</span>
             <span class="stat-value">{{ totalTickets }}</span>
           </div>
@@ -69,6 +72,7 @@
               <p><strong>Cliente:</strong> {{ ticket.nombreCliente }}</p>
               <p><strong>Teléfono:</strong> {{ ticket.telefono }}</p>
               <p><strong>Tipo:</strong> {{ ticket.tipoEntrada }}</p>
+              <p><strong>Boletas:</strong> {{ ticket.cantidadBoletas || 1 }}</p>
               <p><strong>Precio:</strong> {{ ticket.precio || 'Gratis' }}</p>
             </div>
             <div class="ticket-actions">
@@ -104,8 +108,13 @@
             <input v-model="newTicket.tipoEntrada" type="text" placeholder="Ej: Fashion Perreo - etapa BLING" />
           </div>
           <div class="form-group">
-            <label>Precio</label>
+            <label>Cantidad de boletas/manillas</label>
+            <input v-model.number="newTicket.cantidadBoletas" type="number" min="1" value="1" required />
+          </div>
+          <div class="form-group">
+            <label>Precio total</label>
             <input v-model="newTicket.precio" type="text" placeholder="Ej: Gratis o $50.000" />
+            <small class="form-hint">Precio total de todas las boletas</small>
           </div>
           <div class="form-actions">
             <button type="button" @click="showTicketModal = false" class="cancel-btn">Cancelar</button>
@@ -140,11 +149,68 @@
             <label>Email del colaborador</label>
             <input v-model="collaboratorEmail" required type="email" placeholder="colaborador@example.com" />
           </div>
+          <div class="form-group">
+            <label class="permissions-label">Permisos</label>
+            <div class="permissions-checkboxes">
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="collaboratorPermisos.crearTickets" />
+                <span>Crear tickets</span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="collaboratorPermisos.leerQR" />
+                <span>Leer QR</span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" v-model="collaboratorPermisos.verReportes" />
+                <span>Ver reportes</span>
+              </label>
+            </div>
+          </div>
           <div class="form-actions">
             <button type="button" @click="showCollaboratorModal = false" class="cancel-btn">Cancelar</button>
             <button type="submit" class="submit-btn">Agregar</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Modal lista de tickets -->
+    <div v-if="showTicketsList" class="modal-overlay" @click="showTicketsList = false">
+      <div class="modal tickets-list-modal" @click.stop>
+        <h2>Todos los Tickets ({{ totalTickets }})</h2>
+        <div class="search-box">
+          <input 
+            v-model="searchQuery" 
+            type="text" 
+            placeholder="Buscar por cliente, teléfono, código..." 
+            class="search-input"
+          />
+        </div>
+        <div class="tickets-list-container">
+          <div 
+            v-for="(ticket, id) in filteredTickets" 
+            :key="id"
+            class="ticket-list-item"
+            :class="ticket.estado"
+          >
+            <div class="ticket-list-header">
+              <span class="ticket-list-code">{{ ticket.secureCode.substring(0, 12) }}</span>
+              <span class="ticket-list-status" :class="ticket.estado">{{ ticket.estado }}</span>
+            </div>
+            <div class="ticket-list-body">
+              <p><strong>Cliente:</strong> {{ ticket.nombreCliente }}</p>
+              <p><strong>Teléfono:</strong> {{ ticket.telefono }}</p>
+              <p><strong>Boletas:</strong> {{ ticket.cantidadBoletas || 1 }}</p>
+              <p><strong>Precio:</strong> {{ ticket.precio || 'Gratis' }}</p>
+            </div>
+          </div>
+          <div v-if="filteredTickets.length === 0" class="no-results">
+            <p>No se encontraron tickets</p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button @click="showTicketsList = false" class="close-btn">Cerrar</button>
+        </div>
       </div>
     </div>
   </div>
@@ -168,10 +234,17 @@ const loading = ref(true);
 const showTicketModal = ref(false);
 const showTicketView = ref(false);
 const showCollaboratorModal = ref(false);
+const showTicketsList = ref(false);
 const creatingTicket = ref(false);
 const selectedTicket = ref(null);
 const ticketImage = ref(null);
 const collaboratorEmail = ref('');
+const searchQuery = ref('');
+const collaboratorPermisos = ref({
+  crearTickets: true,
+  leerQR: true,
+  verReportes: false
+});
 const ownerUid = ref(null);
 const isOrganizador = ref(false);
 
@@ -179,7 +252,8 @@ const newTicket = ref({
   nombreCliente: '',
   telefono: '',
   tipoEntrada: '',
-  precio: ''
+  precio: '',
+  cantidadBoletas: 1
 });
 
 let unsubscribe = null;
@@ -194,6 +268,22 @@ const ticketsByStatus = computed(() => {
     }
   });
   return stats;
+});
+
+const filteredTickets = computed(() => {
+  if (!searchQuery.value) {
+    return Object.entries(tickets.value).map(([id, ticket]) => ({ id, ...ticket }));
+  }
+  
+  const query = searchQuery.value.toLowerCase();
+  return Object.entries(tickets.value)
+    .map(([id, ticket]) => ({ id, ...ticket }))
+    .filter(ticket => 
+      ticket.nombreCliente?.toLowerCase().includes(query) ||
+      ticket.telefono?.includes(query) ||
+      ticket.secureCode?.toLowerCase().includes(query) ||
+      ticket.tipoEntrada?.toLowerCase().includes(query)
+    );
 });
 
 onMounted(async () => {
@@ -275,7 +365,7 @@ const createTicket = async () => {
     ticketImage.value = imageURL;
     showTicketModal.value = false;
     showTicketView.value = true;
-    newTicket.value = { nombreCliente: '', telefono: '', tipoEntrada: '', precio: '' };
+    newTicket.value = { nombreCliente: '', telefono: '', tipoEntrada: '', precio: '', cantidadBoletas: 1 };
   } catch (error) {
     console.error('Error creando ticket:', error);
     alert('Error al crear el ticket');
@@ -323,12 +413,113 @@ const addCollaborator = async () => {
     ownerUid.value,
     discotecaId,
     eventoId,
-    collaboratorEmail.value
+    collaboratorEmail.value,
+    collaboratorPermisos.value
   );
   
   showCollaboratorModal.value = false;
   collaboratorEmail.value = '';
+  collaboratorPermisos.value = {
+    crearTickets: true,
+    leerQR: true,
+    verReportes: false
+  };
   alert('Colaborador agregado exitosamente');
+};
+
+const exportData = () => {
+  const ticketsArray = Object.entries(tickets.value).map(([id, ticket]) => ({
+    id,
+    ...ticket
+  }));
+
+  // Calcular totales
+  let totalGanancias = 0;
+  let totalBoletas = 0;
+  let ticketsPagados = 0;
+  let ticketsEntregados = 0;
+  let ticketsCancelados = 0;
+  let totalTickets = ticketsArray.length;
+
+  ticketsArray.forEach(ticket => {
+    const cantidad = ticket.cantidadBoletas || 1;
+    totalBoletas += cantidad;
+    
+    if (ticket.estado === 'pagado') ticketsPagados++;
+    if (ticket.estado === 'entregado') ticketsEntregados++;
+    if (ticket.estado === 'cancelado') ticketsCancelados++;
+
+    // Extraer número del precio
+    if (ticket.precio && ticket.precio !== 'Gratis') {
+      const precioStr = ticket.precio.toString().replace(/[^0-9]/g, '');
+      const precioNum = parseInt(precioStr) || 0;
+      if (ticket.estado !== 'cancelado') {
+        totalGanancias += precioNum;
+      }
+    }
+  });
+
+  // Crear CSV con resúmenes primero
+  const csvRows = [];
+  
+  // Encabezado del evento
+  csvRows.push(['EVENTO', evento.value?.nombre || '']);
+  csvRows.push(['FECHA', evento.value?.fecha || '']);
+  csvRows.push(['UBICACIÓN', evento.value?.ubicacion || '']);
+  csvRows.push(['FECHA DE EXPORTACIÓN', new Date().toLocaleDateString('es-ES') + ' ' + new Date().toLocaleTimeString('es-ES')]);
+  csvRows.push([]);
+  
+  // RESUMEN DE VENTAS
+  csvRows.push(['=== RESUMEN DE VENTAS ===']);
+  csvRows.push(['Total de Tickets', totalTickets]);
+  csvRows.push(['Total de Boletas/Manillas', totalBoletas]);
+  csvRows.push(['Total de Ganancias', `$${totalGanancias.toLocaleString('es-ES')}`]);
+  csvRows.push([]);
+  
+  // ESTADOS
+  csvRows.push(['=== ESTADOS ===']);
+  csvRows.push(['Tickets Pagados', ticketsPagados]);
+  csvRows.push(['Tickets Entregados', ticketsEntregados]);
+  csvRows.push(['Tickets Cancelados', ticketsCancelados]);
+  csvRows.push([]);
+  csvRows.push([]);
+  
+  // DETALLE DE TICKETS
+  csvRows.push(['=== DETALLE DE TICKETS ===']);
+  const headers = ['Código', 'Cliente', 'Teléfono', 'Tipo Entrada', 'Cantidad Boletas', 'Precio', 'Estado', 'Fecha Creación'];
+  csvRows.push(headers);
+  
+  // Agregar cada ticket
+  ticketsArray.forEach(ticket => {
+    const fecha = new Date(ticket.createdAt || Date.now()).toLocaleDateString('es-ES');
+    csvRows.push([
+      ticket.secureCode || '',
+      ticket.nombreCliente || '',
+      ticket.telefono || '',
+      ticket.tipoEntrada || '',
+      ticket.cantidadBoletas || 1,
+      ticket.precio || 'Gratis',
+      ticket.estado || '',
+      fecha
+    ]);
+  });
+
+  // Convertir a CSV
+  const csvContent = csvRows.map(row => {
+    if (row.length === 0) return '';
+    return row.map(cell => `"${cell}"`).join(',');
+  }).join('\n');
+
+  // Descargar archivo
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  link.setAttribute('href', url);
+  link.setAttribute('download', `ventas_${evento.value?.nombre || 'evento'}_${new Date().toISOString().split('T')[0]}.csv`);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 };
 
 const goToScanner = () => {
@@ -427,13 +618,22 @@ const goBack = () => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.header-actions-right {
+  display: flex;
+  gap: 10px;
+  align-items: center;
 }
 
 .section-header h2 {
   color: #333;
 }
 
-.create-ticket-btn {
+.create-ticket-btn,
+.export-btn {
   background: #667eea;
   color: white;
   border: none;
@@ -441,6 +641,10 @@ const goBack = () => {
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
+}
+
+.export-btn {
+  background: #28a745;
 }
 
 .tickets-stats {
@@ -455,6 +659,16 @@ const goBack = () => {
   padding: 20px;
   border-radius: 8px;
   text-align: center;
+}
+
+.stat-card.clickable {
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.stat-card.clickable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
 }
 
 .stat-card.pagado {
@@ -661,6 +875,137 @@ const goBack = () => {
   font-size: 14px;
 }
 
+.form-hint {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  color: #999;
+}
+
+.permissions-label {
+  margin-bottom: 12px !important;
+}
+
+.permissions-checkboxes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: normal;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  cursor: pointer;
+}
+
+.tickets-list-modal {
+  max-width: 800px;
+  max-height: 90vh;
+}
+
+.search-box {
+  margin-bottom: 20px;
+}
+
+.search-input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.tickets-list-container {
+  max-height: 500px;
+  overflow-y: auto;
+  margin-bottom: 20px;
+}
+
+.ticket-list-item {
+  background: #f9f9f9;
+  padding: 15px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  border-left: 4px solid #667eea;
+}
+
+.ticket-list-item.pagado {
+  border-left-color: #ffc107;
+}
+
+.ticket-list-item.entregado {
+  border-left-color: #28a745;
+}
+
+.ticket-list-item.cancelado {
+  border-left-color: #dc3545;
+  opacity: 0.7;
+}
+
+.ticket-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.ticket-list-code {
+  font-family: monospace;
+  font-weight: bold;
+  color: #333;
+  font-size: 13px;
+}
+
+.ticket-list-status {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.ticket-list-status.pagado {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.ticket-list-status.entregado {
+  background: #d4edda;
+  color: #155724;
+}
+
+.ticket-list-status.cancelado {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.ticket-list-body p {
+  margin: 5px 0;
+  color: #666;
+  font-size: 13px;
+}
+
+.no-results {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #eee;
+}
+
 .form-actions {
   display: flex;
   gap: 10px;
@@ -740,6 +1085,16 @@ const goBack = () => {
     flex-direction: column;
     align-items: flex-start;
     gap: 12px;
+  }
+
+  .header-actions-right {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .export-btn,
+  .create-ticket-btn {
+    width: 100%;
   }
 
   .section-header h2 {
@@ -823,6 +1178,31 @@ const goBack = () => {
   .cancel-btn,
   .submit-btn {
     width: 100%;
+  }
+
+  .section-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .header-actions-right {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .export-btn,
+  .create-ticket-btn {
+    width: 100%;
+  }
+
+  .tickets-list-modal {
+    width: 95%;
+    max-height: 95vh;
+  }
+
+  .tickets-list-container {
+    max-height: 400px;
   }
 }
 
