@@ -5,15 +5,40 @@
       <h1>Lector de QR</h1>
     </header>
 
+    <!-- Elemento oculto para decodificar QR desde archivo -->
+    <div id="qr-file-reader" class="qr-file-reader-placeholder" aria-hidden="true"></div>
+    <input
+      ref="fileInputRef"
+      type="file"
+      accept="image/*"
+      class="hidden-file-input"
+      aria-label="Cargar imagen con QR"
+      @change="onFileSelected"
+    />
+
     <main class="main-content">
       <div v-if="!scanning" class="start-section">
-        <p>Presiona el botón para iniciar el escáner de QR</p>
-        <button @click="startScanner" class="start-btn">Iniciar Escáner</button>
+        <p>Inicia el escáner con cámara o sube una foto con el QR</p>
+        <div class="start-actions">
+          <button @click="startScanner" class="start-btn">Iniciar Escáner (cámara)</button>
+          <button type="button" class="upload-btn" @click="triggerFileInput">Cargar foto con QR</button>
+        </div>
       </div>
 
       <div v-else class="scanner-section">
         <div id="qr-reader" class="qr-reader-container"></div>
-        <button @click="stopScanner" class="stop-btn">Detener Escáner</button>
+        <div class="scanner-actions">
+          <button type="button" class="upload-btn inline" @click="triggerFileInput">Cargar foto</button>
+          <button
+            v-if="cameraList.length > 1"
+            @click="switchCamera"
+            class="switch-camera-btn"
+            type="button"
+          >
+            📷 {{ currentCameraIsRear ? 'Cámara frontal' : 'Cámara trasera' }}
+          </button>
+          <button @click="stopScanner" class="stop-btn">Detener Escáner</button>
+        </div>
       </div>
 
       <div v-if="scannedTicket" class="ticket-result">
@@ -21,11 +46,15 @@
         <div class="ticket-info">
           <p><strong>Cliente:</strong> {{ scannedTicket.ticket.nombreCliente }}</p>
           <p><strong>Teléfono:</strong> {{ scannedTicket.ticket.telefono }}</p>
-          <p><strong>Estado actual:</strong> 
+          <p><strong>Manillas / Boletas:</strong> {{ scannedTicket.ticket.cantidadBoletas ?? 1 }}</p>
+          <p v-if="scannedTicket.ticket.tipoEntrada"><strong>Tipo entrada:</strong> {{ scannedTicket.ticket.tipoEntrada }}</p>
+          <p v-if="scannedTicket.ticket.precio != null"><strong>Precio:</strong> {{ formatPrecio(scannedTicket.ticket.precio) }}</p>
+          <p><strong>Estado:</strong>
             <span class="status-badge" :class="scannedTicket.ticket.estado">
               {{ scannedTicket.ticket.estado }}
             </span>
           </p>
+          <p class="ticket-code"><strong>Código:</strong> {{ scannedTicket.ticket.secureCode?.substring(0, 20) }}…</p>
         </div>
         
         <div v-if="scannedTicket.ticket.estado === 'pagado'" class="action-section">
@@ -45,6 +74,10 @@
         <button @click="clearResult" class="clear-btn">Escanear Otro</button>
       </div>
 
+      <div v-if="loadingFile" class="loading-file-message">
+        <p>Leyendo QR de la imagen…</p>
+      </div>
+
       <div v-if="error" class="error-message">
         <p>{{ error }}</p>
         <button @click="error = ''" class="close-error-btn">Cerrar</button>
@@ -54,13 +87,13 @@
 </template>
 
 <script setup>
-import { ref, onUnmounted } from 'vue';
+import { ref, computed, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { authService } from '../services/authService';
 import { databaseService } from '../services/databaseService';
 import { permissionService } from '../services/permissionService';
 import { bitacoraService } from '../services/bitacoraService';
-import { QRReader } from '../utils/qrReader';
+import { QRReader, getCameraList, getDefaultCameraId, scanFileFromImage } from '../utils/qrReader';
 
 const route = useRoute();
 const router = useRouter();
@@ -70,13 +103,88 @@ const user = ref(null);
 const scanning = ref(false);
 const scannedTicket = ref(null);
 const error = ref('');
+const cameraList = ref([]);
+const currentCameraId = ref(null);
+const fileInputRef = ref(null);
+const loadingFile = ref(false);
 let qrReader = null;
+
+const currentCameraIsRear = computed(() => {
+  const cam = cameraList.value.find((c) => c.id === currentCameraId.value);
+  return cam?.isRear ?? false;
+});
+
+function formatPrecio(value) {
+  if (value == null || value === '') return '—';
+  const n = Number(value);
+  if (Number.isNaN(n)) return String(value);
+  return new Intl.NumberFormat('es', { style: 'currency', currency: 'COP' }).format(n);
+}
 
 onUnmounted(() => {
   if (qrReader) {
     qrReader.stop();
   }
 });
+
+/** Procesar código QR decodificado (cámara o archivo) */
+async function processDecodedCode(decodedText) {
+  try {
+    const result = await databaseService.findTicketByCode(decodedText);
+    if (!result) {
+      error.value = 'Ticket no encontrado';
+      return;
+    }
+    if (result.discotecaId !== discotecaId || result.eventoId !== eventoId) {
+      error.value = 'Este ticket no pertenece a este evento';
+      return;
+    }
+    scannedTicket.value = result;
+    await bitacoraService.registrarAccion(
+      result.uid,
+      result.discotecaId,
+      result.eventoId,
+      'qr_escaneado',
+      {
+        ticketId: result.ticketId,
+        ticketCode: result.ticket.secureCode.substring(0, 12),
+        cliente: result.ticket.nombreCliente,
+        estado: result.ticket.estado,
+      }
+    );
+    if (qrReader) {
+      await qrReader.stop();
+    }
+    scanning.value = false;
+  } catch (err) {
+    error.value = 'Error al buscar el ticket: ' + err.message;
+  }
+}
+
+function triggerFileInput() {
+  fileInputRef.value?.click();
+}
+
+const onFileSelected = async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  user.value = authService.getCurrentUser();
+  if (!user.value) {
+    router.push('/');
+    return;
+  }
+  error.value = '';
+  scannedTicket.value = null;
+  loadingFile.value = true;
+  const result = await scanFileFromImage(file);
+  loadingFile.value = false;
+  if (fileInputRef.value) fileInputRef.value.value = '';
+  if (!result.success) {
+    error.value = result.error || 'No se pudo leer el QR de la imagen';
+    return;
+  }
+  await processDecodedCode(result.decodedText);
+};
 
 const startScanner = async () => {
   user.value = authService.getCurrentUser();
@@ -88,47 +196,14 @@ const startScanner = async () => {
   scanning.value = true;
   error.value = '';
   scannedTicket.value = null;
+  cameraList.value = await getCameraList();
+  currentCameraId.value = null;
 
-  // Esperar un momento para que el DOM se actualice
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await new Promise((resolve) => setTimeout(resolve, 100));
 
   qrReader = new QRReader();
-  
-  qrReader.setOnScanSuccess(async (decodedText) => {
-    try {
-      // Buscar ticket por código
-      const result = await databaseService.findTicketByCode(decodedText);
-      
-      if (result) {
-        // Verificar que el ticket pertenece a este evento
-        if (result.discotecaId === discotecaId && result.eventoId === eventoId) {
-          scannedTicket.value = result;
-          
-          // Registrar escaneo en bitácora
-          await bitacoraService.registrarAccion(
-            result.uid,
-            result.discotecaId,
-            result.eventoId,
-            'qr_escaneado',
-            {
-              ticketId: result.ticketId,
-              ticketCode: result.ticket.secureCode.substring(0, 12),
-              cliente: result.ticket.nombreCliente,
-              estado: result.ticket.estado
-            }
-          );
-          
-          await qrReader.stop();
-          scanning.value = false;
-        } else {
-          error.value = 'Este ticket no pertenece a este evento';
-        }
-      } else {
-        error.value = 'Ticket no encontrado';
-      }
-    } catch (err) {
-      error.value = 'Error al buscar el ticket: ' + err.message;
-    }
+  qrReader.setOnScanSuccess((decodedText) => {
+    processDecodedCode(decodedText);
   });
 
   qrReader.setOnScanError((errorMessage) => {
@@ -136,10 +211,26 @@ const startScanner = async () => {
     console.log('Error de escaneo:', errorMessage);
   });
 
-  const result = await qrReader.start();
+  const preferredId = getDefaultCameraId(cameraList.value);
+  const result = await qrReader.start(preferredId);
   if (!result.success) {
     error.value = result.error || 'Error al iniciar el escáner';
     scanning.value = false;
+  } else {
+    currentCameraId.value = qrReader.cameraId;
+  }
+};
+
+const switchCamera = async () => {
+  if (!qrReader || cameraList.value.length < 2) return;
+  const currentIdx = cameraList.value.findIndex((c) => c.id === currentCameraId.value);
+  const nextIdx = (currentIdx + 1) % cameraList.value.length;
+  const nextCamera = cameraList.value[nextIdx];
+  const result = await qrReader.switchCamera(nextCamera.id);
+  if (result.success) {
+    currentCameraId.value = nextCamera.id;
+  } else {
+    error.value = result.error || 'No se pudo cambiar la cámara';
   }
 };
 
@@ -258,11 +349,36 @@ const goBack = async () => {
   padding: 20px;
 }
 
+.qr-file-reader-placeholder {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.hidden-file-input {
+  position: absolute;
+  width: 0.1px;
+  height: 0.1px;
+  opacity: 0;
+  overflow: hidden;
+  z-index: -1;
+}
+
 .start-section {
   background: white;
   padding: 40px;
   border-radius: 12px;
   text-align: center;
+}
+
+.start-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  margin-top: 20px;
 }
 
 .start-btn {
@@ -274,7 +390,40 @@ const goBack = async () => {
   font-size: 16px;
   font-weight: 500;
   cursor: pointer;
+  width: 100%;
+  max-width: 280px;
+}
+
+.upload-btn {
+  background: #48bb78;
+  color: white;
+  border: none;
+  padding: 15px 30px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  max-width: 280px;
+  width: 100%;
+}
+
+.upload-btn.inline {
+  padding: 12px 20px;
+  font-size: 14px;
+  width: auto;
+}
+
+.upload-btn:hover {
+  background: #38a169;
+}
+
+.loading-file-message {
+  background: #e6fffa;
+  color: #234e52;
+  padding: 16px;
+  border-radius: 8px;
   margin-top: 20px;
+  text-align: center;
 }
 
 .scanner-section {
@@ -289,9 +438,29 @@ const goBack = async () => {
   margin: 0 auto 20px;
 }
 
+.scanner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.switch-camera-btn {
+  background: #5a67d8;
+  color: white;
+  border: none;
+  padding: 12px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.switch-camera-btn:hover {
+  background: #4c51bf;
+}
+
 .stop-btn {
-  display: block;
-  margin: 20px auto 0;
   background: #dc3545;
   color: white;
   border: none;
@@ -299,6 +468,16 @@ const goBack = async () => {
   border-radius: 8px;
   cursor: pointer;
   font-size: 14px;
+}
+
+.stop-btn:hover {
+  background: #c82333;
+}
+
+.ticket-code {
+  font-size: 12px;
+  color: #888;
+  word-break: break-all;
 }
 
 .ticket-result {
@@ -431,6 +610,11 @@ const goBack = async () => {
     max-width: 100%;
   }
 
+  .scanner-actions {
+    flex-direction: column;
+  }
+
+  .switch-camera-btn,
   .stop-btn {
     width: 100%;
     padding: 14px;
