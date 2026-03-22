@@ -53,6 +53,14 @@ npm run dev
 npm run build
 ```
 
+## Despliegue (Hosting + Functions / Wompi)
+
+```bash
+npm run deploy:all
+```
+
+Solo hosting: `npm run deploy`. Configuración Wompi: **`WOMPI_SETUP.md`**.
+
 ## Vista previa
 
 ```bash

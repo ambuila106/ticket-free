@@ -1,74 +1,63 @@
-# Wompi + página pública de compra
+# Wompi + página pública de compra — checklist final
 
-## Rama
+## 1. Reglas Realtime Database
 
-Los cambios están en la rama `feature/public-evento-wompi`.
+Publica `FIREBASE_SECURITY_RULES.json` (ya corregidas: `replace` con strings, paréntesis, colaboradores).
 
-## Qué hace
+## 2. Variables de entorno en Cloud Functions (producción)
 
-- **Ruta pública** (sin login): `/comprar/:ownerUid/:discotecaId/:eventoId`
-- Los compradores **no** acceden al dashboard; solo ven info del evento y el formulario de pago.
-- Los datos públicos viven en **`publicEvents/...`** en Realtime Database (no se exponen los tickets).
-- **Cloud Functions** preparan el pago (firma de integridad) y el **webhook** crea el ticket al aprobar el pago.
+Las funciones leen **`process.env`**. Debes definirlas en **Google Cloud Console**:
 
-## 1. Reglas de Firebase
+1. [Cloud Run](https://console.cloud.google.com/run) → filtra por región **us-central1**
+2. Abre el servicio **`preparewompipayment`** (o nombre similar) → **Editar e implementar nueva revisión** → **Variables y secretos** → agrega:
 
-Publica las reglas de `FIREBASE_SECURITY_RULES.json` en la consola de Firebase (Realtime Database > Reglas).
+| Variable | Valor (desde Wompi → Desarrollo → Programadores) |
+|----------|---------------------------------------------------|
+| `WOMPI_PUBLIC_KEY` | Llave pública `pub_prod_...` |
+| `WOMPI_INTEGRITY_SECRET` | Secreto de integridad `prod_integrity_...` |
+| `WOMPI_EVENTS_SECRET` | Secreto de eventos `prod_events_...` |
+| `PUBLIC_APP_URL` | `https://TU-PROYECTO.web.app` (recomendado) |
 
-## 2. Variables de entorno (Functions)
+3. Repite para el servicio **`wompiwebhook`** (mismas variables; al menos `WOMPI_EVENTS_SECRET` para validar el webhook).
 
-En [Google Cloud Console](https://console.cloud.google.com) → Cloud Functions → tu función → Editar → Variables de entorno, o con CLI:
+> Tras cambiar variables, despliega una nueva revisión o vuelve a ejecutar `firebase deploy --only functions`.
 
-```bash
-# Ejemplo (ajusta valores reales de tu panel Wompi)
-firebase functions:config:set wompi.integrity="TU_SECRETO"  # legado; preferible env en Cloud
-```
+**Local / emulador:** copia `functions/.env.example` a `functions/.env` y rellena (está en `.gitignore`).
 
-Para **2nd gen**, define variables en la consola o usa Secret Manager:
+## 3. URL de eventos en Wompi
 
-- `WOMPI_INTEGRITY_SECRET` — Desarrolladores > Secreto de integridad
-- `WOMPI_PUBLIC_KEY` — Llave pública `pub_test_` o `pub_prod_`
-- `PUBLIC_APP_URL` — URL de tu sitio (ej. `https://chatonline-4aa0d.web.app`)
-- `WOMPI_EVENTS_SECRET` — (opcional) para validar webhooks si Wompi lo ofrece
+En el dashboard de comercios, **URL de eventos**:
 
-Copia `functions/.env.example` a `functions/.env` para el **emulador** (no subas `.env` a git).
+`https://TU-DOMINIO.web.app/api/wompiWebhook`
 
-## 3. Webhook en Wompi
-
-En el panel de Wompi, configura la URL del evento de transacciones:
-
-`https://TU_DOMINIO/api/wompiWebhook`
-
-(Con Firebase Hosting + rewrites, es la misma URL que tu app en producción.)
+(misma URL que usa Firebase Hosting + rewrites de `firebase.json`).
 
 ## 4. Despliegue
 
 ```bash
 cd functions && npm install && cd ..
-firebase deploy --only functions,hosting
+npm run deploy:all
 ```
 
-Primera vez con Functions: habilita la API y la cuenta de facturación si Firebase lo pide.
+O por partes: `npm run build`, luego `firebase deploy --only functions`, luego `firebase deploy --only hosting`.
 
-## 5. Front: desarrollo local
+**Requisito:** plan de pago Blaze para Functions (si Firebase lo pide).
 
-Las peticiones van a `/api/...`. Con Vite en `localhost:5173` no hay proxy a Functions por defecto.
+## 5. Organizador en la app
 
-Opciones:
+En cada evento: **Venta pública (Wompi)** → activar, precio COP, **Guardar**, **Copiar enlace** `/comprar/...`.
 
-- Usa **Firebase emulators** y en `.env` del front (Vite):
+## 6. Seguridad del webhook
 
-  `VITE_API_BASE=http://127.0.0.1:5001/chatonline-4aa0d/us-central1`
+Si `WOMPI_EVENTS_SECRET` está definido, se valida el checksum según [documentación Wompi Colombia (Eventos → Seguridad)](https://docs.wompi.co/docs/colombia/eventos/). También se comprueba que `amount_in_cents` coincida con el pedido pendiente.
 
-  (La ruta exacta puede variar; revisa la salida del emulador.)
+## 7. Desarrollo local (Vite)
 
-- O prueba solo en **producción** tras deploy.
+Las peticiones a `/api/...` no llegan a Functions desde `localhost:5173`. Opciones:
 
-## 6. Organizador: enlace público
+- Probar compra en **producción** tras deploy, o
+- Variable en `.env` del front: `VITE_API_BASE=http://127.0.0.1:5001/TU_PROJECT_ID/us-central1` y emulador (ruta exacta según salida del emulador).
 
-En la vista del evento (rol organizador), bloque **“Venta pública (Wompi)”**: activar, precio en COP, guardar y **copiar enlace** para compartir.
+---
 
-## Notas
-
-- El `ownerUid` en la URL es el UID de Firebase del organizador; quien tenga el enlace puede ver la página pública, no el panel admin.
-- Revisa en la documentación de Wompi Colombia el formato de **centavos** en COP si algo no cuadra con montos.
+**No subas** llaves ni secretos al repositorio. Si los expusiste en un chat público, **regenera** secretos en Wompi y actualiza las variables en Cloud Run.

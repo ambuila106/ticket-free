@@ -1,10 +1,20 @@
 /**
  * Cloud Functions: Wompi (Colombia)
- * Variables de entorno (Functions config o .env local):
- *   WOMPI_INTEGRITY_SECRET - Secreto de integridad (panel Wompi > Desarrolladores)
- *   WOMPI_PUBLIC_KEY       - Llave pública pub_prod_... o pub_test_...
- *   WOMPI_EVENTS_SECRET    - (Opcional) para validar firma del webhook
+ *
+ * Variables (producción: Google Cloud Console → Cloud Run → servicio de la función → Variables y secretos,
+ * o archivo functions/.env en local / emulador):
+ *   WOMPI_INTEGRITY_SECRET  — Secreto de integridad del widget
+ *   WOMPI_PUBLIC_KEY        — pub_prod_... / pub_test_...
+ *   WOMPI_EVENTS_SECRET     — prod_events_... (validación webhook; recomendado)
+ *   PUBLIC_APP_URL          — https://tu-dominio.web.app (opcional si hay header Origin)
  */
+const path = require("path");
+try {
+  require("dotenv").config({ path: path.join(__dirname, ".env") });
+} catch (_) {
+  /* dotenv opcional */
+}
+
 const crypto = require("crypto");
 const { onRequest } = require("firebase-functions/v2/https");
 const { setGlobalOptions } = require("firebase-functions/v2");
@@ -18,6 +28,11 @@ if (!admin.apps.length) {
 
 const db = admin.database();
 
+function env(name) {
+  const v = process.env[name];
+  return v && String(v).trim() ? String(v).trim() : "";
+}
+
 function generateSecureCode() {
   const timestamp = Date.now();
   const random = Math.random().toString(36).substring(2, 15);
@@ -25,9 +40,43 @@ function generateSecureCode() {
   return `${timestamp}-${random}-${random2}`.toUpperCase();
 }
 
-function wompiIntegrity(reference, amountInCents, currency, secret) {
+function wompiWidgetIntegrity(reference, amountInCents, currency, secret) {
   const payload = `${reference}${amountInCents}${currency}${secret}`;
   return crypto.createHash("sha256").update(payload).digest("hex");
+}
+
+/** Lee ruta tipo "transaction.id" dentro de body.data */
+function getDataProperty(data, propertyPath) {
+  if (!data || !propertyPath) return null;
+  const parts = String(propertyPath).split(".");
+  let cur = data;
+  for (const p of parts) {
+    if (cur == null || typeof cur !== "object") return null;
+    cur = cur[p];
+  }
+  return cur;
+}
+
+/**
+ * Validación oficial Wompi (docs Colombia → Eventos → Seguridad)
+ * https://docs.wompi.co/docs/colombia/eventos/
+ */
+function verifyWompiEventFromRequest(body, headerChecksum, eventsSecret) {
+  if (!eventsSecret) return { ok: true, skipped: true };
+  if (!body?.signature?.properties || body.timestamp == null) {
+    return { ok: false, reason: "missing_signature_fields" };
+  }
+  let concat = "";
+  for (const prop of body.signature.properties) {
+    const val = getDataProperty(body.data, prop);
+    concat += val == null ? "" : String(val);
+  }
+  concat += String(body.timestamp);
+  concat += eventsSecret;
+  const computed = crypto.createHash("sha256").update(concat, "utf8").digest("hex").toLowerCase();
+  const expected = (body.signature.checksum || headerChecksum || "").toLowerCase();
+  if (!expected) return { ok: false, reason: "no_checksum" };
+  return { ok: computed === expected, skipped: false };
 }
 
 exports.prepareWompiPayment = onRequest(
@@ -42,11 +91,12 @@ exports.prepareWompiPayment = onRequest(
       return;
     }
 
-    const integritySecret = process.env.WOMPI_INTEGRITY_SECRET;
-    const publicKey = process.env.WOMPI_PUBLIC_KEY;
+    const integritySecret = env("WOMPI_INTEGRITY_SECRET");
+    const publicKey = env("WOMPI_PUBLIC_KEY");
     if (!integritySecret || !publicKey) {
       res.status(503).json({
-        error: "Pagos no configurados: faltan WOMPI_INTEGRITY_SECRET o WOMPI_PUBLIC_KEY en Functions",
+        error:
+          "Pagos no configurados. Define WOMPI_INTEGRITY_SECRET y WOMPI_PUBLIC_KEY en la función (Cloud Run / .env).",
       });
       return;
     }
@@ -83,7 +133,6 @@ exports.prepareWompiPayment = onRequest(
     if (!Number.isFinite(qty) || qty < 1) qty = 1;
     if (qty > 20) qty = 20;
 
-    // Wompi Colombia: monto en centavos (1 COP = 100 centavos)
     const amountInCents = unitCOP * qty * 100;
     const reference = `TF${Date.now()}${crypto.randomBytes(5).toString("hex")}`.substring(0, 36);
 
@@ -104,14 +153,18 @@ exports.prepareWompiPayment = onRequest(
     await db.ref(`pendingWompiPurchases/${reference}`).set(pending);
 
     const currency = "COP";
-    const integrity = wompiIntegrity(reference, amountInCents, currency, integritySecret);
+    const integrity = wompiWidgetIntegrity(reference, amountInCents, currency, integritySecret);
 
-    const baseUrl = (process.env.PUBLIC_APP_URL || req.headers.origin || "")
-      .replace(/\/$/, "");
+    const origin =
+      env("PUBLIC_APP_URL") ||
+      (req.headers.origin && String(req.headers.origin)) ||
+      (req.headers.referer && String(req.headers.referer).split("/").slice(0, 3).join("/")) ||
+      "";
+    const baseUrl = origin.replace(/\/$/, "");
     if (!baseUrl) {
       res.status(503).json({
         error:
-          "Configura PUBLIC_APP_URL en Functions o asegúrate de llamar desde el navegador (header Origin).",
+          "Configura PUBLIC_APP_URL en la función o abre la compra desde el navegador (header Origin).",
       });
       return;
     }
@@ -127,9 +180,6 @@ exports.prepareWompiPayment = onRequest(
   }
 );
 
-/**
- * Webhook Wompi: crea ticket cuando la transacción queda APPROVED
- */
 exports.wompiWebhook = onRequest({ cors: false, invoker: "public" }, async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).send("Method not allowed");
@@ -137,8 +187,26 @@ exports.wompiWebhook = onRequest({ cors: false, invoker: "public" }, async (req,
   }
 
   const body = req.body;
-  // Opcional: validar firma del webhook según la doc actual de Wompi (propiedad / checksum)
-  // y asignar WOMPI_EVENTS_SECRET; si no está configurado, se confía en la red de Wompi + referencia TF*.
+  const eventsSecret = env("WOMPI_EVENTS_SECRET");
+  const headerChecksum = String(
+    req.headers["x-event-checksum"] || req.headers["X-Event-Checksum"] || ""
+  );
+
+  if (eventsSecret) {
+    const v = verifyWompiEventFromRequest(body, headerChecksum, eventsSecret);
+    if (!v.ok) {
+      console.warn("Wompi webhook: checksum inválido", v.reason);
+      res.status(401).send("Invalid signature");
+      return;
+    }
+  } else {
+    console.warn("Wompi webhook: WOMPI_EVENTS_SECRET no definido; se acepta el evento sin verificar firma");
+  }
+
+  if (body?.event && body.event !== "transaction.updated") {
+    res.status(200).send("OK");
+    return;
+  }
 
   let transaction = null;
   if (body?.data?.transaction) {
@@ -177,7 +245,23 @@ exports.wompiWebhook = onRequest({ cors: false, invoker: "public" }, async (req,
     return;
   }
 
-  const { ownerUid, discotecaId, eventoId, nombreCliente, telefono, cantidad, tipoEntrada, amountInCents } = p;
+  const txAmount = Number(transaction.amount_in_cents);
+  if (Number.isFinite(txAmount) && Number.isFinite(p.amountInCents) && txAmount !== p.amountInCents) {
+    console.warn("Wompi webhook: monto no coincide con pending", { txAmount, pending: p.amountInCents });
+    res.status(400).send("Amount mismatch");
+    return;
+  }
+
+  const {
+    ownerUid,
+    discotecaId,
+    eventoId,
+    nombreCliente,
+    telefono,
+    cantidad,
+    tipoEntrada,
+    amountInCents,
+  } = p;
   const ticketsRef = db.ref(`users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`);
   const ticketRef = ticketsRef.push();
   const ticketId = ticketRef.key;
