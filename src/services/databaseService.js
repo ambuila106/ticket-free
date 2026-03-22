@@ -217,6 +217,31 @@ export const databaseService = {
     }
 
     return events;
-  }
+  },
+
+  // ========== PÁGINA PÚBLICA DE EVENTO (datos seguros; sin listar tickets) ==========
+
+  /** Lectura pública (sin login) para la página de compra */
+  async getPublicEventPage(ownerUid, discotecaId, eventoId) {
+    const pageRef = ref(database, `publicEvents/${ownerUid}/${discotecaId}/${eventoId}`);
+    const snapshot = await get(pageRef);
+    return snapshot.exists() ? snapshot.val() : null;
+  },
+
+  subscribeToPublicEventPage(ownerUid, discotecaId, eventoId, callback) {
+    const pageRef = ref(database, `publicEvents/${ownerUid}/${discotecaId}/${eventoId}`);
+    return onValue(pageRef, (snapshot) => {
+      callback(snapshot.exists() ? snapshot.val() : null);
+    });
+  },
+
+  /** Solo el dueño puede escribir (reglas Firebase) */
+  async setPublicEventPage(ownerUid, discotecaId, eventoId, pageData) {
+    const pageRef = ref(database, `publicEvents/${ownerUid}/${discotecaId}/${eventoId}`);
+    await set(pageRef, {
+      ...pageData,
+      updatedAt: Date.now(),
+    });
+  },
 };
 

@@ -1,4 +1,7 @@
 {
+  "functions": {
+    "source": "functions"
+  },
   "hosting": {
     "public": "dist",
     "ignore": [
@@ -8,10 +11,17 @@
     ],
     "rewrites": [
       {
+        "source": "/api/prepareWompiPayment",
+        "function": "prepareWompiPayment"
+      },
+      {
+        "source": "/api/wompiWebhook",
+        "function": "wompiWebhook"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
     ]
   }
 }
-

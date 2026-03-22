@@ -1,5 +1,20 @@
 {
   "rules": {
+    "publicEvents": {
+      "$ownerUid": {
+        "$discotecaId": {
+          "$eventoId": {
+            ".read": true,
+            ".write": "auth != null && auth.uid === $ownerUid",
+            ".validate": "newData.hasChildren(['enabled', 'nombreEvento', 'fecha', 'updatedAt']) && newData.child('enabled').isBoolean() && newData.child('nombreEvento').isString() && newData.child('fecha').isString() && newData.child('updatedAt').isNumber()"
+          }
+        }
+      }
+    },
+    "pendingWompiPurchases": {
+      ".read": false,
+      ".write": false
+    },
     "users": {
       "$uid": {
         ".read": "$uid === auth.uid",
@@ -32,4 +47,3 @@
     }
   }
 }
-

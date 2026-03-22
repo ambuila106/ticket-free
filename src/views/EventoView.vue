@@ -28,6 +28,37 @@
         <p><strong>Ubicación:</strong> {{ evento?.ubicacion }}</p>
       </div>
 
+      <div v-if="isOrganizador" class="public-sales-card">
+        <h3>🌐 Venta pública (Wompi)</h3>
+        <p class="public-sales-hint">
+          Comparte solo el enlace de abajo. Los compradores no ven el panel de administración.
+        </p>
+        <label class="toggle-row">
+          <input type="checkbox" v-model="publicPageForm.enabled" />
+          <span>Activar página pública de compra</span>
+        </label>
+        <div class="public-form-grid">
+          <label>
+            Precio por entrada (COP)
+            <input v-model.number="publicPageForm.precioPorEntradaCOP" type="number" min="100" step="100" />
+          </label>
+          <label>
+            Tipo de entrada (etiqueta)
+            <input v-model="publicPageForm.tipoEntrada" type="text" placeholder="Ej: General" />
+          </label>
+        </div>
+        <div class="public-actions">
+          <button type="button" class="save-public-btn" @click="savePublicPage" :disabled="savingPublicPage">
+            {{ savingPublicPage ? 'Guardando…' : 'Guardar página pública' }}
+          </button>
+          <button type="button" class="copy-link-btn" @click="copyPublicLink" :disabled="!ownerUid">
+            Copiar enlace de compra
+          </button>
+        </div>
+        <p v-if="publicCopyMsg" class="copy-msg">{{ publicCopyMsg }}</p>
+        <code class="public-url-preview">{{ publicPurchaseLink }}</code>
+      </div>
+
       <div class="tickets-section">
         <div class="section-header">
           <h2>Tickets</h2>
@@ -328,6 +359,14 @@ const collaboratorPermisos = ref({
 });
 const ownerUid = ref(null);
 const isOrganizador = ref(false);
+const discoteca = ref(null);
+const publicPageForm = ref({
+  enabled: false,
+  precioPorEntradaCOP: 50000,
+  tipoEntrada: 'General'
+});
+const savingPublicPage = ref(false);
+const publicCopyMsg = ref('');
 
 const newTicket = ref({
   nombreCliente: '',
@@ -339,6 +378,12 @@ const newTicket = ref({
 
 let unsubscribe = null;
 let unsubscribeBitacora = null;
+
+const publicPurchaseLink = computed(() => {
+  if (!ownerUid.value) return '';
+  const base = typeof window !== 'undefined' ? window.location.origin : '';
+  return `${base}/comprar/${ownerUid.value}/${discotecaId}/${eventoId}`;
+});
 
 const totalTickets = computed(() => Object.keys(tickets.value).length);
 
@@ -432,6 +477,19 @@ onMounted(async () => {
     // Obtener evento si no se obtuvo antes
     if (!evento.value) {
       evento.value = await databaseService.getEvento(ownerUid.value, discotecaId, eventoId);
+    }
+
+    if (isOrganizador.value && ownerUid.value) {
+      const discotecas = await databaseService.getDiscotecas(ownerUid.value);
+      discoteca.value = discotecas[discotecaId] || null;
+      const pub = await databaseService.getPublicEventPage(ownerUid.value, discotecaId, eventoId);
+      if (pub) {
+        publicPageForm.value = {
+          enabled: !!pub.enabled,
+          precioPorEntradaCOP: Number(pub.precioPorEntradaCOP) || 50000,
+          tipoEntrada: pub.tipoEntrada || 'General'
+        };
+      }
     }
     
     // Suscribirse a tickets
@@ -825,6 +883,41 @@ const exportData = async () => {
   document.body.removeChild(link);
 };
 
+const savePublicPage = async () => {
+  if (!ownerUid.value || !evento.value) return;
+  savingPublicPage.value = true;
+  publicCopyMsg.value = '';
+  try {
+    await databaseService.setPublicEventPage(ownerUid.value, discotecaId, eventoId, {
+      enabled: publicPageForm.value.enabled,
+      nombreEvento: evento.value.nombre || '',
+      fecha: evento.value.fecha || '',
+      ubicacion: evento.value.ubicacion || discoteca.value?.ubicacion || '',
+      descripcion: evento.value.descripcion || '',
+      nombreDiscoteca: discoteca.value?.nombre || '',
+      precioPorEntradaCOP: Math.max(100, Number(publicPageForm.value.precioPorEntradaCOP) || 0),
+      tipoEntrada: (publicPageForm.value.tipoEntrada || 'General').trim().substring(0, 80)
+    });
+    alert('Página pública guardada. Copia el enlace para compartirlo.');
+  } catch (e) {
+    alert('Error al guardar: ' + (e.message || 'desconocido'));
+  } finally {
+    savingPublicPage.value = false;
+  }
+};
+
+const copyPublicLink = async () => {
+  publicCopyMsg.value = '';
+  const url = publicPurchaseLink.value;
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    publicCopyMsg.value = 'Enlace copiado al portapapeles.';
+  } catch {
+    publicCopyMsg.value = url;
+  }
+};
+
 const goToScanner = () => {
   router.push(`/qr-scanner/${discotecaId}/${eventoId}`);
 };
@@ -913,6 +1006,103 @@ const goBack = () => {
 .evento-info p {
   margin-bottom: 8px;
   color: #666;
+}
+
+.public-sales-card {
+  background: linear-gradient(135deg, #f0f4ff 0%, #e8eeff 100%);
+  border: 1px solid #c5d0f0;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.public-sales-card h3 {
+  margin-bottom: 8px;
+  color: #333;
+  font-size: 1.1rem;
+}
+
+.public-sales-hint {
+  font-size: 0.9rem;
+  color: #555;
+  margin-bottom: 16px;
+  line-height: 1.4;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  font-weight: 500;
+  color: #333;
+  cursor: pointer;
+}
+
+.public-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.public-form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #444;
+}
+
+.public-form-grid input {
+  padding: 10px 12px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.public-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.save-public-btn {
+  background: #667eea;
+  color: white;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.copy-link-btn {
+  background: #48bb78;
+  color: white;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.copy-msg {
+  font-size: 0.85rem;
+  color: #2d7a4d;
+  margin-bottom: 8px;
+}
+
+.public-url-preview {
+  display: block;
+  font-size: 11px;
+  word-break: break-all;
+  background: rgba(255, 255, 255, 0.8);
+  padding: 10px;
+  border-radius: 6px;
+  color: #333;
 }
 
 .tickets-section {
@@ -1503,6 +1693,19 @@ const goBack = () => {
   .evento-info {
     padding: 15px;
     margin-bottom: 20px;
+  }
+
+  .public-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .public-actions {
+    flex-direction: column;
+  }
+
+  .save-public-btn,
+  .copy-link-btn {
+    width: 100%;
   }
 
   .tickets-section {

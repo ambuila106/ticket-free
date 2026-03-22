@@ -3,6 +3,12 @@ import { authService } from '../services/authService';
 
 const routes = [
   {
+    path: '/comprar/:ownerUid/:discotecaId/:eventoId',
+    name: 'PublicEvento',
+    component: () => import('../views/PublicEventView.vue'),
+    meta: { requiresAuth: false }
+  },
+  {
     path: '/',
     name: 'Login',
     component: () => import('../views/LoginView.vue'),

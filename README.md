@@ -12,6 +12,7 @@ Sistema de gestión de tickets para eventos con Firebase Realtime Database.
 - 👥 Sistema de colaboradores
 - 📊 Estados de tickets: pagado, entregado, cancelado
 - 🖼️ Generación de imágenes de tickets para WhatsApp
+- 🛒 **Página pública de compra** (`/comprar/...`) con Wompi (Cloud Functions) — ver `WOMPI_SETUP.md`
 
 ## Estructura de Datos
 

@@ -1,0 +1,17 @@
+{
+  "name": "ticket-free-functions",
+  "description": "Wompi: preparar pago y webhook",
+  "engines": {
+    "node": "18"
+  },
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.6.0",
+    "firebase-functions": "^6.1.0"
+  }
+}
