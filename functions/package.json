@@ -2,7 +2,7 @@
   "name": "ticket-free-functions",
   "description": "Wompi: preparar pago y webhook",
   "engines": {
-    "node": "18"
+    "node": "20"
   },
   "main": "index.js",
   "private": true,
