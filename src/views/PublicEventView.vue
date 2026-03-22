@@ -16,7 +16,13 @@
 
       <div v-else-if="!available" class="card muted">
         <p>Esta página de compra no está disponible o el enlace no es válido.</p>
-        <p class="hint">Pide al organizador un enlace actualizado.</p>
+        <p v-if="page && !isVentaActivada" class="hint">
+          El organizador debe activar <strong>«Venta pública (Wompi)»</strong> en el evento y pulsar <strong>Guardar página pública</strong>.
+        </p>
+        <p v-else-if="page && !precioValido" class="hint">
+          Falta un <strong>precio por entrada (COP)</strong> de al menos $100 en la configuración pública del evento.
+        </p>
+        <p v-else class="hint">Pide al organizador un enlace actualizado.</p>
       </div>
 
       <div v-else class="card purchase">
@@ -92,7 +98,20 @@ const form = ref({
   cantidad: 1,
 });
 
-const available = computed(() => page.value && page.value.enabled === true);
+const isVentaActivada = computed(() => {
+  if (!page.value) return false;
+  const e = page.value.enabled;
+  return e === true || e === "true" || e === 1;
+});
+
+const precioValido = computed(() => {
+  if (!page.value) return false;
+  const precio = Number(page.value.precioPorEntradaCOP);
+  return Number.isFinite(precio) && precio >= 100;
+});
+
+/** Venta activa: enabled + precio mínimo */
+const available = computed(() => isVentaActivada.value && precioValido.value);
 
 const unitPrice = computed(() => {
   const n = Number(page.value?.precioPorEntradaCOP);

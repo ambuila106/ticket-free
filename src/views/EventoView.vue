@@ -889,7 +889,7 @@ const savePublicPage = async () => {
   publicCopyMsg.value = '';
   try {
     await databaseService.setPublicEventPage(ownerUid.value, discotecaId, eventoId, {
-      enabled: publicPageForm.value.enabled,
+      enabled: !!publicPageForm.value.enabled,
       nombreEvento: evento.value.nombre || '',
       fecha: evento.value.fecha || '',
       ubicacion: evento.value.ubicacion || discoteca.value?.ubicacion || '',
