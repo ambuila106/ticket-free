@@ -48,6 +48,13 @@ export const authService = {
   // Obtener usuario actual
   getCurrentUser() {
     return auth.currentUser;
+  },
+
+  /** Token ID para llamadas a API protegidas (p. ej. reenvío de QR). */
+  async getIdToken() {
+    const u = auth.currentUser;
+    if (!u) return null;
+    return u.getIdToken();
   }
 };
 

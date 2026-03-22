@@ -179,7 +179,13 @@ async function startPayment() {
     if (!res.ok) {
       throw new Error(data.error || data.message || "No se pudo iniciar el pago");
     }
-    await openWompiCheckout(data, () => {
+    await openWompiCheckout(data, (result) => {
+      const trx = result?.transaction || result;
+      const st = String(trx?.status || result?.status || "").toUpperCase();
+      if (st === "APPROVED" && data.reference) {
+        router.push({ name: "PublicEntrada", params: { reference: data.reference } });
+        return;
+      }
       infoMsg.value =
         "Si completaste el pago, en unos segundos quedará registrada tu entrada. Revisa con el organizador o tu correo.";
     });

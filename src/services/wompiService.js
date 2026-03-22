@@ -11,6 +11,13 @@ export function getPreparePaymentUrl() {
   return "/api/prepareWompiPayment";
 }
 
+export function getResendTicketQrEmailUrl() {
+  if (API_BASE) {
+    return `${API_BASE.replace(/\/$/, "")}/api/resendTicketQrEmail`;
+  }
+  return "/api/resendTicketQrEmail";
+}
+
 export function loadWompiWidgetScript() {
   return new Promise((resolve, reject) => {
     if (typeof window !== "undefined" && window.WidgetCheckout) {

@@ -103,18 +103,28 @@
             :class="ticket.estado"
           >
             <div class="ticket-header">
-              <span class="ticket-code">{{ ticket.secureCode.substring(0, 12) }}</span>
+              <span class="ticket-code">{{ formatCodesPreview(ticket) }}</span>
               <span class="ticket-status" :class="ticket.estado">{{ ticket.estado }}</span>
             </div>
             <div class="ticket-body">
               <p><strong>Cliente:</strong> {{ ticket.nombreCliente }}</p>
               <p><strong>Teléfono:</strong> {{ ticket.telefono }}</p>
+              <p v-if="ticket.emailCliente"><strong>Correo:</strong> {{ ticket.emailCliente }}</p>
               <p><strong>Tipo:</strong> {{ ticket.tipoEntrada }}</p>
               <p><strong>Boletas:</strong> {{ ticket.cantidadBoletas || 1 }}</p>
               <p><strong>Precio:</strong> {{ ticket.precio || 'Gratis' }}</p>
             </div>
             <div class="ticket-actions">
               <button @click="viewTicket(ticket, id)" class="view-btn">Ver QR</button>
+              <button
+                v-if="ticket.emailCliente"
+                type="button"
+                class="resend-email-btn"
+                :disabled="resendingTicketId === id"
+                @click="resendQrToEmail(id)"
+              >
+                {{ resendingTicketId === id ? 'Enviando…' : 'Reenviar QR al correo' }}
+              </button>
               <button 
                 v-if="ticket.estado === 'pagado'"
                 @click="updateStatus(id, 'cancelado')" 
@@ -142,6 +152,16 @@
             <input v-model="newTicket.telefono" required type="tel" />
           </div>
           <div class="form-group">
+            <label>Correo (opcional)</label>
+            <input
+              v-model="newTicket.emailCliente"
+              type="email"
+              autocomplete="email"
+              placeholder="cliente@correo.com"
+            />
+            <small class="form-hint">Si lo pones, podrás usar «Reenviar QR al correo» para este ticket.</small>
+          </div>
+          <div class="form-group">
             <label>Tipo de entrada</label>
             <input v-model="newTicket.tipoEntrada" type="text" placeholder="Ej: Fashion Perreo - etapa BLING" />
           </div>
@@ -165,14 +185,31 @@
     </div>
 
     <!-- Modal ver ticket/QR -->
-    <div v-if="showTicketView" class="modal-overlay" @click="showTicketView = false">
-      <div class="modal ticket-modal" @click.stop>
-        <h2>Ticket</h2>
+    <div v-if="showTicketView" class="modal-overlay" @click="closeTicketView">
+      <div class="modal ticket-modal ticket-modal-wide" @click.stop>
+        <h2>{{ ticketPreviewItems.length > 1 ? 'Entradas (QR)' : 'Ticket' }}</h2>
         <div v-if="selectedTicket" class="ticket-preview">
-          <img :src="ticketImage" alt="Ticket QR" class="ticket-image" />
+          <div v-if="ticketPreviewItems.length > 1" class="multi-qr-admin">
+            <p class="multi-qr-hint">{{ ticketPreviewItems.length }} códigos QR — uno por cada boleta.</p>
+            <div class="multi-qr-grid">
+              <div v-for="(url, i) in ticketPreviewItems" :key="i" class="multi-qr-cell">
+                <span class="multi-qr-label">Entrada {{ i + 1 }} / {{ ticketPreviewItems.length }}</span>
+                <img :src="url" alt="" class="multi-qr-img" />
+                <button type="button" class="multi-qr-dl" @click="downloadPreviewQr(url, i)">Descargar</button>
+              </div>
+            </div>
+          </div>
+          <img v-else-if="ticketImage" :src="ticketImage" alt="Ticket QR" class="ticket-image" />
           <div class="ticket-actions-modal">
-            <button @click="downloadTicket" class="download-btn">Descargar Imagen</button>
-            <button @click="showTicketView = false" class="close-btn">Cerrar</button>
+            <button
+              v-if="ticketImage && ticketPreviewItems.length <= 1"
+              type="button"
+              @click="downloadTicket"
+              class="download-btn"
+            >
+              Descargar imagen
+            </button>
+            <button type="button" @click="closeTicketView" class="close-btn">Cerrar</button>
           </div>
         </div>
       </div>
@@ -232,17 +269,27 @@
             :class="ticket.estado"
           >
             <div class="ticket-list-header">
-              <span class="ticket-list-code">{{ ticket.secureCode.substring(0, 12) }}</span>
+              <span class="ticket-list-code">{{ formatCodesPreview(ticket) }}</span>
               <span class="ticket-list-status" :class="ticket.estado">{{ ticket.estado }}</span>
             </div>
             <div class="ticket-list-body">
               <p><strong>Cliente:</strong> {{ ticket.nombreCliente }}</p>
               <p><strong>Teléfono:</strong> {{ ticket.telefono }}</p>
+              <p v-if="ticket.emailCliente"><strong>Correo:</strong> {{ ticket.emailCliente }}</p>
               <p><strong>Boletas:</strong> {{ ticket.cantidadBoletas || 1 }}</p>
               <p><strong>Precio:</strong> {{ ticket.precio || 'Gratis' }}</p>
             </div>
             <div class="ticket-list-actions">
               <button @click="viewTicketFromList(ticket, id)" class="view-qr-btn">Ver QR</button>
+              <button
+                v-if="ticket.emailCliente"
+                type="button"
+                class="resend-email-list-btn"
+                :disabled="resendingTicketId === id"
+                @click="resendQrToEmail(id)"
+              >
+                {{ resendingTicketId === id ? 'Enviando…' : 'Reenviar correo' }}
+              </button>
             </div>
           </div>
           <div v-if="filteredTickets.length === 0" class="no-results">
@@ -328,7 +375,9 @@ import { authService } from '../services/authService';
 import { databaseService } from '../services/databaseService';
 import { permissionService } from '../services/permissionService';
 import { bitacoraService } from '../services/bitacoraService';
+import { getResendTicketQrEmailUrl } from '../services/wompiService';
 import { generateQRCode, generateTicketImage } from '../utils/qrGenerator';
+import { getTicketSecureCodes, formatCodesPreview } from '../utils/ticketCodes';
 import { validators, sanitizeInput, sanitizeNumber } from '../utils/validation';
 
 const route = useRoute();
@@ -347,6 +396,7 @@ const showBitacoraModal = ref(false);
 const creatingTicket = ref(false);
 const selectedTicket = ref(null);
 const ticketImage = ref(null);
+const ticketPreviewItems = ref([]);
 const collaboratorEmail = ref('');
 const searchQuery = ref('');
 const bitacoraSearchQuery = ref('');
@@ -367,10 +417,12 @@ const publicPageForm = ref({
 });
 const savingPublicPage = ref(false);
 const publicCopyMsg = ref('');
+const resendingTicketId = ref(null);
 
 const newTicket = ref({
   nombreCliente: '',
   telefono: '',
+  emailCliente: '',
   tipoEntrada: '',
   precio: '',
   cantidadBoletas: 1
@@ -405,12 +457,15 @@ const filteredTickets = computed(() => {
   const query = searchQuery.value.toLowerCase();
   return Object.entries(tickets.value)
     .map(([id, ticket]) => ({ id, ...ticket }))
-    .filter(ticket => 
-      ticket.nombreCliente?.toLowerCase().includes(query) ||
-      ticket.telefono?.includes(query) ||
-      ticket.secureCode?.toLowerCase().includes(query) ||
-      ticket.tipoEntrada?.toLowerCase().includes(query)
-    );
+    .filter(ticket => {
+      const codes = getTicketSecureCodes(ticket).join(' ').toLowerCase();
+      return (
+        ticket.nombreCliente?.toLowerCase().includes(query) ||
+        ticket.telefono?.includes(query) ||
+        codes.includes(query) ||
+        ticket.tipoEntrada?.toLowerCase().includes(query)
+      );
+    });
 });
 
 const filteredBitacora = computed(() => {
@@ -554,6 +609,12 @@ const createTicket = async () => {
     alert('Teléfono inválido. Debe contener entre 7 y 15 dígitos.');
     return;
   }
+
+  const emailTrim = String(newTicket.value.emailCliente || '').trim();
+  if (emailTrim && !validators.email(emailTrim)) {
+    alert('Correo inválido. Déjalo vacío o usa un email válido.');
+    return;
+  }
   
   if (!validators.cantidadBoletas(newTicket.value.cantidadBoletas)) {
     alert('Cantidad de boletas debe ser entre 1 y 100');
@@ -571,6 +632,7 @@ const createTicket = async () => {
     const ticketData = {
       nombreCliente: sanitizeInput(newTicket.value.nombreCliente),
       telefono: sanitizeInput(newTicket.value.telefono),
+      emailCliente: emailTrim.substring(0, 120),
       tipoEntrada: sanitizeInput(newTicket.value.tipoEntrada || ''),
       precio: sanitizeInput(newTicket.value.precio || 'Gratis'),
       cantidadBoletas: sanitizeNumber(newTicket.value.cantidadBoletas, 1, 100),
@@ -594,7 +656,10 @@ const createTicket = async () => {
       'ticket_creado',
       {
         ticketId: result.ticketId,
-        ticketCode: result.secureCode.substring(0, 12),
+        ticketCode: (result.secureCodes && result.secureCodes[0]
+          ? result.secureCodes[0]
+          : result.secureCode
+        ).substring(0, 12),
         cliente: ticketData.nombreCliente,
         telefono: ticketData.telefono,
         cantidadBoletas: ticketData.cantidadBoletas,
@@ -603,18 +668,32 @@ const createTicket = async () => {
       }
     );
     
-    // Generar QR e imagen
-    const qrDataURL = await generateQRCode(result.secureCode);
-    const imageURL = await generateTicketImage(
-      { ...result.ticket, ...ticketData },
-      qrDataURL
-    );
-    
+    const codes = result.secureCodes || [result.secureCode];
+    ticketPreviewItems.value = [];
+    if (codes.length > 1) {
+      for (const c of codes) {
+        ticketPreviewItems.value.push(await generateQRCode(c));
+      }
+      ticketImage.value = null;
+    } else {
+      const qrDataURL = await generateQRCode(codes[0]);
+      ticketImage.value = await generateTicketImage(
+        { ...result.ticket, ...ticketData, secureCode: codes[0] },
+        qrDataURL
+      );
+    }
+
     selectedTicket.value = result.ticket;
-    ticketImage.value = imageURL;
     showTicketModal.value = false;
     showTicketView.value = true;
-    newTicket.value = { nombreCliente: '', telefono: '', tipoEntrada: '', precio: '', cantidadBoletas: 1 };
+    newTicket.value = {
+      nombreCliente: '',
+      telefono: '',
+      emailCliente: '',
+      tipoEntrada: '',
+      precio: '',
+      cantidadBoletas: 1
+    };
   } catch (error) {
     console.error('Error creando ticket:', error);
     alert('Error al crear el ticket');
@@ -623,38 +702,89 @@ const createTicket = async () => {
   }
 };
 
+const resendQrToEmail = async (ticketId) => {
+  if (!ownerUid.value) return;
+  const token = await authService.getIdToken();
+  if (!token) {
+    alert('Debes iniciar sesión de nuevo');
+    return;
+  }
+  resendingTicketId.value = ticketId;
+  try {
+    const url = getResendTicketQrEmailUrl();
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        ownerUid: ownerUid.value,
+        discotecaId,
+        eventoId,
+        ticketId,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'No se pudo enviar el correo');
+    }
+    alert('Correo con el QR enviado correctamente');
+  } catch (e) {
+    alert(e.message || 'Error al reenviar');
+  } finally {
+    resendingTicketId.value = null;
+  }
+};
+
+const closeTicketView = () => {
+  showTicketView.value = false;
+  ticketPreviewItems.value = [];
+  ticketImage.value = null;
+};
+
+const downloadPreviewQr = (url, index) => {
+  const link = document.createElement('a');
+  link.href = url;
+  const codes = selectedTicket.value ? getTicketSecureCodes(selectedTicket.value) : [];
+  const stub = codes[index] ? String(codes[index]).substring(0, 8) : String(index + 1);
+  link.download = `entrada-${stub}.png`;
+  link.click();
+};
+
 const viewTicket = async (ticket, ticketId) => {
   selectedTicket.value = ticket;
-  const qrDataURL = await generateQRCode(ticket.secureCode);
-  const imageURL = await generateTicketImage(
-    { ...ticket, eventoNombre: evento.value.nombre, fecha: evento.value.fecha, ubicacion: evento.value.ubicacion },
-    qrDataURL
-  );
-  ticketImage.value = imageURL;
+  ticketPreviewItems.value = [];
+  const codes = getTicketSecureCodes(ticket);
+  if (codes.length > 1) {
+    for (const c of codes) {
+      ticketPreviewItems.value.push(await generateQRCode(c));
+    }
+    ticketImage.value = null;
+  } else if (codes.length === 1) {
+    const qrDataURL = await generateQRCode(codes[0]);
+    ticketImage.value = await generateTicketImage(
+      { ...ticket, eventoNombre: evento.value.nombre, fecha: evento.value.fecha, ubicacion: evento.value.ubicacion, secureCode: codes[0] },
+      qrDataURL
+    );
+  } else {
+    ticketImage.value = null;
+  }
   showTicketView.value = true;
 };
 
 const viewTicketFromList = async (ticket, ticketId) => {
-  // Cerrar el modal de lista primero
   showTicketsList.value = false;
-  
-  // Generar QR e imagen
-  selectedTicket.value = ticket;
-  const qrDataURL = await generateQRCode(ticket.secureCode);
-  const imageURL = await generateTicketImage(
-    { ...ticket, eventoNombre: evento.value.nombre, fecha: evento.value.fecha, ubicacion: evento.value.ubicacion },
-    qrDataURL
-  );
-  ticketImage.value = imageURL;
-  showTicketView.value = true;
+  await viewTicket(ticket, ticketId);
 };
 
 const downloadTicket = () => {
-  if (!ticketImage.value) return;
-  
+  if (!ticketImage.value || !selectedTicket.value) return;
+
   const link = document.createElement('a');
   link.href = ticketImage.value;
-  link.download = `ticket-${selectedTicket.value.secureCode.substring(0, 8)}.png`;
+  const c0 = getTicketSecureCodes(selectedTicket.value)[0] || selectedTicket.value.secureCode || 'ticket';
+  link.download = `ticket-${String(c0).substring(0, 8)}.png`;
   link.click();
 };
 
@@ -701,7 +831,7 @@ const updateStatus = async (ticketId, nuevoEstado) => {
     nuevoEstado === 'cancelado' ? 'ticket_cancelado' : 'estado_cambiado',
     {
       ticketId,
-      ticketCode: ticket?.secureCode?.substring(0, 12) || '',
+      ticketCode: (getTicketSecureCodes(ticket)[0] || ticket?.secureCode || '').substring(0, 12),
       cliente: ticket?.nombreCliente || '',
       estadoAnterior,
       estadoNuevo: nuevoEstado
@@ -847,14 +977,15 @@ const exportData = async () => {
   
   // DETALLE DE TICKETS
   csvRows.push(['=== DETALLE DE TICKETS ===']);
-  const headers = ['Código', 'Cliente', 'Teléfono', 'Tipo Entrada', 'Cantidad Boletas', 'Precio', 'Estado', 'Fecha Creación'];
+  const headers = ['Códigos QR (todos)', 'Cliente', 'Teléfono', 'Tipo Entrada', 'Cantidad Boletas', 'Precio', 'Estado', 'Fecha Creación'];
   csvRows.push(headers);
   
   // Agregar cada ticket
   ticketsArray.forEach(ticket => {
     const fecha = new Date(ticket.createdAt || Date.now()).toLocaleDateString('es-ES');
+    const codesJoined = getTicketSecureCodes(ticket).join(' | ');
     csvRows.push([
-      ticket.secureCode || '',
+      codesJoined || ticket.secureCode || '',
       ticket.nombreCliente || '',
       ticket.telefono || '',
       ticket.tipoEntrada || '',
@@ -1264,8 +1395,24 @@ const goBack = () => {
 
 .ticket-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 15px;
+}
+
+.resend-email-btn {
+  padding: 8px 16px;
+  border: 1px solid #667eea;
+  background: #fff;
+  color: #667eea;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.resend-email-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .view-btn,
@@ -1312,6 +1459,59 @@ const goBack = () => {
 
 .ticket-modal {
   max-width: 600px;
+}
+
+.ticket-modal-wide {
+  max-width: 920px;
+}
+
+.multi-qr-hint {
+  text-align: center;
+  color: #555;
+  margin-bottom: 16px;
+  font-size: 0.95rem;
+}
+
+.multi-qr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.multi-qr-cell {
+  text-align: center;
+  padding: 12px;
+  border: 1px solid #eee;
+  border-radius: 10px;
+  background: #fafafa;
+}
+
+.multi-qr-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: #666;
+  margin-bottom: 8px;
+}
+
+.multi-qr-img {
+  width: 100%;
+  max-width: 200px;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: 8px;
+}
+
+.multi-qr-dl {
+  margin-top: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid #667eea;
+  background: #fff;
+  color: #667eea;
+  border-radius: 6px;
+  cursor: pointer;
 }
 
 .modal h2 {
@@ -1495,6 +1695,9 @@ const goBack = () => {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid #eee;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .view-qr-btn {
@@ -1511,6 +1714,22 @@ const goBack = () => {
 
 .view-qr-btn:hover {
   background: #5568d3;
+}
+
+.resend-email-list-btn {
+  width: 100%;
+  padding: 8px 16px;
+  background: #fff;
+  color: #667eea;
+  border: 1px solid #667eea;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.resend-email-list-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .no-results {

@@ -9,6 +9,12 @@ const routes = [
     meta: { requiresAuth: false }
   },
   {
+    path: '/entrada/:reference',
+    name: 'PublicEntrada',
+    component: () => import('../views/PublicEntradaView.vue'),
+    meta: { requiresAuth: false }
+  },
+  {
     path: '/',
     name: 'Login',
     component: () => import('../views/LoginView.vue'),

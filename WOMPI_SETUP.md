@@ -18,7 +18,11 @@ Las funciones leen **`process.env`**. Debes definirlas en **Google Cloud Console
 | `WOMPI_EVENTS_SECRET` | Secreto de eventos `prod_events_...` |
 | `PUBLIC_APP_URL` | `https://TU-PROYECTO.web.app` (recomendado) |
 
-3. Repite para el servicio **`wompiwebhook`** (mismas variables; al menos `WOMPI_EVENTS_SECRET` para validar el webhook).
+3. En **`wompiwebhook`**: mismas variables que necesites (mínimo `WOMPI_EVENTS_SECRET`) y, para enviar el QR al comprador, **`RESEND_API_KEY`** y **`RESEND_FROM`** ([Resend](https://resend.com), dominio/remitente verificado).
+
+4. En **`resendticketqremail`**: **`RESEND_API_KEY`** y **`RESEND_FROM`** (para el botón *Reenviar QR al correo* en el panel).
+
+> Tras un pago aprobado, Wompi redirige a **`/entrada/{referencia}`** (QR en pantalla). El webhook escribe `publicPurchaseSuccess` en la base de datos y envía el correo si Resend está configurado en esa función.
 
 > Tras cambiar variables, despliega una nueva revisión o vuelve a ejecutar `firebase deploy --only functions`.
 

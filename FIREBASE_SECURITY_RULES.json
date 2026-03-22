@@ -15,6 +15,12 @@
       ".read": false,
       ".write": false
     },
+    "publicPurchaseSuccess": {
+      "$reference": {
+        ".read": true,
+        ".write": false
+      }
+    },
     "users": {
       "$uid": {
         ".read": "$uid === auth.uid",

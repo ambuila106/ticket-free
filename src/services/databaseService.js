@@ -12,6 +12,7 @@ import {
 } from "firebase/database";
 import { database } from "../firebase/config";
 import { generateSecureCode } from "../utils/qrGenerator";
+import { getTicketSecureCodes } from "../utils/ticketCodes";
 
 // Estructura: uid-discoteca-evento (usamos uid en lugar de email para evitar caracteres especiales)
 export const databaseService = {
@@ -80,24 +81,38 @@ export const databaseService = {
 
   // ========== TICKETS ==========
 
-  // Crear ticket (venta)
+  // Crear ticket (venta) — un código QR por boleta
   async createTicket(uid, discotecaId, eventoId, ticketData) {
-    const secureCode = generateSecureCode();
+    let qty = parseInt(ticketData.cantidadBoletas, 10);
+    if (!Number.isFinite(qty) || qty < 1) qty = 1;
+    if (qty > 100) qty = 100;
+
+    const seen = new Set();
+    const secureCodes = [];
+    while (secureCodes.length < qty) {
+      const c = generateSecureCode();
+      if (!seen.has(c)) {
+        seen.add(c);
+        secureCodes.push(c);
+      }
+    }
+
     const ticketId = push(ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`)).key;
-    
     const ticket = {
       id: ticketId,
-      secureCode,
+      secureCode: secureCodes[0],
+      secureCodes,
       ...ticketData,
+      cantidadBoletas: qty,
       estado: "pagado",
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
     };
 
     const ticketRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`);
     await set(ticketRef, ticket);
-    
-    return { ticketId, secureCode, ticket };
+
+    return { ticketId, secureCode: secureCodes[0], secureCodes, ticket };
   },
 
   // Obtener tickets de un evento
@@ -124,6 +139,52 @@ export const databaseService = {
     });
   },
 
+  /**
+   * Marca una boleta como entregada (ventas con varios QR).
+   * Si solo hay un código, marca el ticket entero como entregado.
+   * @returns {Promise<{ yaUsado?: boolean, completo: boolean, entregadas?: number, total?: number, modo?: string }>}
+   */
+  async marcarBoletaEntregada(uid, discotecaId, eventoId, ticketId, codigoEscaneado) {
+    const ticketRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`);
+    const snap = await get(ticketRef);
+    if (!snap.exists()) throw new Error("Ticket no encontrado");
+    const ticket = snap.val();
+    const codes = getTicketSecureCodes(ticket);
+
+    if (!codes.length) throw new Error("Ticket sin códigos");
+    if (!codes.includes(codigoEscaneado)) throw new Error("Código no pertenece a este ticket");
+
+    if (codes.length <= 1) {
+      await update(ticketRef, { estado: "entregado", updatedAt: Date.now() });
+      return { modo: "unico", completo: true, entregadas: 1, total: 1 };
+    }
+
+    const prev =
+      ticket.entradasCanjeadas && typeof ticket.entradasCanjeadas === "object"
+        ? { ...ticket.entradasCanjeadas }
+        : {};
+    if (prev[codigoEscaneado]) {
+      return { yaUsado: true, completo: false, entregadas: Object.keys(prev).length, total: codes.length };
+    }
+
+    prev[codigoEscaneado] = Date.now();
+    const entregadas = Object.keys(prev).length;
+    const updates = {
+      entradasCanjeadas: prev,
+      updatedAt: Date.now(),
+    };
+    if (entregadas >= codes.length) {
+      updates.estado = "entregado";
+    }
+    await update(ticketRef, updates);
+    return {
+      completo: entregadas >= codes.length,
+      entregadas,
+      total: codes.length,
+      modo: "multi",
+    };
+  },
+
   // Buscar ticket por código seguro
   async findTicketByCode(secureCode) {
     // Necesitamos buscar en toda la base de datos
@@ -145,7 +206,8 @@ export const databaseService = {
                 if (data.users[uid].discotecas[discotecaId].eventos[eventoId].tickets) {
                   for (const ticketId in data.users[uid].discotecas[discotecaId].eventos[eventoId].tickets) {
                     const ticket = data.users[uid].discotecas[discotecaId].eventos[eventoId].tickets[ticketId];
-                    if (ticket.secureCode === secureCode) {
+                    const codes = getTicketSecureCodes(ticket);
+                    if (codes.includes(secureCode)) {
                       return {
                         ticket,
                         uid,
@@ -231,6 +293,17 @@ export const databaseService = {
   subscribeToPublicEventPage(ownerUid, discotecaId, eventoId, callback) {
     const pageRef = ref(database, `publicEvents/${ownerUid}/${discotecaId}/${eventoId}`);
     return onValue(pageRef, (snapshot) => {
+      callback(snapshot.exists() ? snapshot.val() : null);
+    });
+  },
+
+  /**
+   * Lectura pública tras pago Wompi (solo escribe el webhook).
+   * @param {string} purchaseReference - Referencia TF... devuelta por prepareWompiPayment
+   */
+  subscribeToPublicPurchaseSuccess(purchaseReference, callback) {
+    const r = ref(database, `publicPurchaseSuccess/${purchaseReference}`);
+    return onValue(r, (snapshot) => {
       callback(snapshot.exists() ? snapshot.val() : null);
     });
   },

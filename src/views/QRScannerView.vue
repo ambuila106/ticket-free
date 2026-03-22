@@ -47,6 +47,7 @@
           <p><strong>Cliente:</strong> {{ scannedTicket.ticket.nombreCliente }}</p>
           <p><strong>Teléfono:</strong> {{ scannedTicket.ticket.telefono }}</p>
           <p><strong>Manillas / Boletas:</strong> {{ scannedTicket.ticket.cantidadBoletas ?? 1 }}</p>
+          <p v-if="boletaIndex > 0"><strong>QR escaneado:</strong> entrada {{ boletaIndex }} de {{ totalBoletas }}</p>
           <p v-if="scannedTicket.ticket.tipoEntrada"><strong>Tipo entrada:</strong> {{ scannedTicket.ticket.tipoEntrada }}</p>
           <p v-if="scannedTicket.ticket.precio != null"><strong>Precio:</strong> {{ formatPrecio(scannedTicket.ticket.precio) }}</p>
           <p><strong>Estado:</strong>
@@ -54,17 +55,22 @@
               {{ scannedTicket.ticket.estado }}
             </span>
           </p>
-          <p class="ticket-code"><strong>Código:</strong> {{ scannedTicket.ticket.secureCode?.substring(0, 20) }}…</p>
+          <p v-if="progresoEntrega" class="progress-line">{{ progresoEntrega }}</p>
+          <p class="ticket-code"><strong>Código:</strong> {{ scannedTicket.scannedCode?.substring(0, 24) }}…</p>
         </div>
         
-        <div v-if="scannedTicket.ticket.estado === 'pagado'" class="action-section">
+        <div v-if="scannedTicket.ticket.estado === 'pagado' && !codigoYaCanjeado" class="action-section">
           <button @click="markAsDelivered" class="deliver-btn">
-            ✅ Marcar como Entregado
+            {{ totalBoletas > 1 ? '✅ Registrar esta entrada' : '✅ Marcar como Entregado' }}
           </button>
+        </div>
+
+        <div v-else-if="scannedTicket.ticket.estado === 'pagado' && codigoYaCanjeado" class="info-message">
+          <p>Esta boleta ya fue registrada como entregada.</p>
         </div>
         
         <div v-else-if="scannedTicket.ticket.estado === 'entregado'" class="info-message">
-          <p>Este ticket ya fue entregado</p>
+          <p>Todas las entradas de esta compra ya fueron entregadas.</p>
         </div>
         
         <div v-else class="info-message">
@@ -94,6 +100,7 @@ import { databaseService } from '../services/databaseService';
 import { permissionService } from '../services/permissionService';
 import { bitacoraService } from '../services/bitacoraService';
 import { QRReader, getCameraList, getDefaultCameraId, scanFileFromImage } from '../utils/qrReader';
+import { getTicketSecureCodes } from '../utils/ticketCodes';
 
 const route = useRoute();
 const router = useRouter();
@@ -112,6 +119,38 @@ let qrReader = null;
 const currentCameraIsRear = computed(() => {
   const cam = cameraList.value.find((c) => c.id === currentCameraId.value);
   return cam?.isRear ?? false;
+});
+
+const totalBoletas = computed(() => {
+  const t = scannedTicket.value?.ticket;
+  if (!t) return 1;
+  return getTicketSecureCodes(t).length || t.cantidadBoletas || 1;
+});
+
+const boletaIndex = computed(() => {
+  const st = scannedTicket.value;
+  if (!st?.ticket || !st.scannedCode) return 0;
+  const codes = getTicketSecureCodes(st.ticket);
+  const i = codes.indexOf(st.scannedCode);
+  return i >= 0 ? i + 1 : 0;
+});
+
+const codigoYaCanjeado = computed(() => {
+  const st = scannedTicket.value;
+  if (!st?.ticket || !st.scannedCode) return false;
+  const ec = st.ticket.entradasCanjeadas;
+  if (!ec || typeof ec !== 'object') return false;
+  return Boolean(ec[st.scannedCode]);
+});
+
+const progresoEntrega = computed(() => {
+  const t = scannedTicket.value?.ticket;
+  if (!t) return '';
+  const codes = getTicketSecureCodes(t);
+  if (codes.length <= 1) return '';
+  const ec = t.entradasCanjeadas && typeof t.entradasCanjeadas === 'object' ? t.entradasCanjeadas : {};
+  const n = Object.keys(ec).length;
+  return `Entregadas en puerta: ${n} / ${codes.length}`;
 });
 
 function formatPrecio(value) {
@@ -139,7 +178,7 @@ async function processDecodedCode(decodedText) {
       error.value = 'Este ticket no pertenece a este evento';
       return;
     }
-    scannedTicket.value = result;
+    scannedTicket.value = { ...result, scannedCode: decodedText };
     await bitacoraService.registrarAccion(
       result.uid,
       result.discotecaId,
@@ -147,7 +186,7 @@ async function processDecodedCode(decodedText) {
       'qr_escaneado',
       {
         ticketId: result.ticketId,
-        ticketCode: result.ticket.secureCode.substring(0, 12),
+        ticketCode: decodedText.substring(0, 12),
         cliente: result.ticket.nombreCliente,
         estado: result.ticket.estado,
       }
@@ -270,32 +309,66 @@ const markAsDelivered = async () => {
   }
 
   try {
-    await databaseService.updateTicketStatus(
+    const code = scannedTicket.value.scannedCode;
+    if (!code) {
+      error.value = 'Código de escaneo no disponible';
+      return;
+    }
+
+    const res = await databaseService.marcarBoletaEntregada(
       scannedTicket.value.uid,
       scannedTicket.value.discotecaId,
       scannedTicket.value.eventoId,
       scannedTicket.value.ticketId,
-      'entregado'
+      code
     );
 
-    scannedTicket.value.ticket.estado = 'entregado';
-    
-    // Registrar cambio de estado en bitácora
-    await bitacoraService.registrarAccion(
-      scannedTicket.value.uid,
-      scannedTicket.value.discotecaId,
-      scannedTicket.value.eventoId,
-      'estado_cambiado',
-      {
-        ticketId: scannedTicket.value.ticketId,
-        ticketCode: scannedTicket.value.ticket.secureCode.substring(0, 12),
-        cliente: scannedTicket.value.ticket.nombreCliente,
-        estadoAnterior: 'pagado',
-        estadoNuevo: 'entregado'
-      }
-    );
-    
-    alert('Ticket marcado como entregado exitosamente');
+    if (res.yaUsado) {
+      alert('Esta boleta ya había sido registrada.');
+      return;
+    }
+
+    if (res.completo) {
+      scannedTicket.value.ticket.estado = 'entregado';
+      await bitacoraService.registrarAccion(
+        scannedTicket.value.uid,
+        scannedTicket.value.discotecaId,
+        scannedTicket.value.eventoId,
+        'estado_cambiado',
+        {
+          ticketId: scannedTicket.value.ticketId,
+          ticketCode: code.substring(0, 12),
+          cliente: scannedTicket.value.ticket.nombreCliente,
+          estadoAnterior: 'pagado',
+          estadoNuevo: 'entregado',
+        }
+      );
+      alert(
+        res.total > 1
+          ? `Listo: las ${res.total} entradas de esta compra quedaron entregadas.`
+          : 'Ticket marcado como entregado.'
+      );
+    } else {
+      scannedTicket.value.ticket.entradasCanjeadas = {
+        ...(scannedTicket.value.ticket.entradasCanjeadas || {}),
+        [code]: Date.now(),
+      };
+      await bitacoraService.registrarAccion(
+        scannedTicket.value.uid,
+        scannedTicket.value.discotecaId,
+        scannedTicket.value.eventoId,
+        'estado_cambiado',
+        {
+          ticketId: scannedTicket.value.ticketId,
+          ticketCode: code.substring(0, 12),
+          cliente: scannedTicket.value.ticket.nombreCliente,
+          estadoAnterior: 'pagado',
+          estadoNuevo: 'pagado',
+          detalle: `Boleta ${res.entregadas}/${res.total} entregada`,
+        }
+      );
+      alert(`Entrada registrada (${res.entregadas} de ${res.total}). Escanea el siguiente QR cuando corresponda.`);
+    }
   } catch (err) {
     error.value = 'Error al actualizar el estado: ' + err.message;
   }

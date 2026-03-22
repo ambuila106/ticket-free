@@ -19,6 +19,10 @@
         "function": "wompiWebhook"
       },
       {
+        "source": "/api/resendTicketQrEmail",
+        "function": "resendTicketQrEmail"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
