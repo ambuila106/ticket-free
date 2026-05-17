@@ -72,11 +72,11 @@
 
         <div class="tickets-stats">
           <div class="stat-card clickable" @click="showTicketsList = true">
-            <span class="stat-label">Total</span>
-            <span class="stat-value">{{ totalTickets }}</span>
+            <span class="stat-label">Total QR</span>
+            <span class="stat-value">{{ totalQrs }}</span>
           </div>
           <div class="stat-card pagado">
-            <span class="stat-label">Pagados</span>
+            <span class="stat-label">QR pagados</span>
             <span class="stat-value">{{ ticketsByStatus.pagado }}</span>
           </div>
           <div class="stat-card entregado">
@@ -84,7 +84,7 @@
             <span class="stat-value">{{ ticketsByStatus.entregado }}</span>
           </div>
           <div class="stat-card cancelado">
-            <span class="stat-label">Cancelados</span>
+            <span class="stat-label">QR cancelados</span>
             <span class="stat-value">{{ ticketsByStatus.cancelado }}</span>
           </div>
         </div>
@@ -439,8 +439,26 @@ const publicPurchaseLink = computed(() => {
 
 const totalTickets = computed(() => Object.keys(tickets.value).length);
 
+const getTicketQrCount = (ticket) => {
+  const secureCodes = getTicketSecureCodes(ticket);
+  if (secureCodes.length > 0) return secureCodes.length;
+
+  const cantidadBoletas = Number(ticket?.cantidadBoletas);
+  if (Number.isFinite(cantidadBoletas) && cantidadBoletas > 0) {
+    return cantidadBoletas;
+  }
+
+  return 1;
+};
+
+const totalQrs = computed(() => {
+  return Object.values(tickets.value).reduce((total, ticket) => {
+    return total + getTicketQrCount(ticket);
+  }, 0);
+});
+
 const getDeliveredQrCount = (ticket) => {
-  const totalCodes = getTicketSecureCodes(ticket).length || Math.max(1, Number(ticket?.cantidadBoletas) || 1);
+  const totalCodes = getTicketQrCount(ticket);
   const canjeadas = ticket?.entradasCanjeadas && typeof ticket.entradasCanjeadas === 'object'
     ? Object.keys(ticket.entradasCanjeadas).length
     : 0;
@@ -456,8 +474,9 @@ const getDeliveredQrCount = (ticket) => {
 const ticketsByStatus = computed(() => {
   const stats = { pagado: 0, entregado: 0, cancelado: 0 };
   Object.values(tickets.value).forEach(ticket => {
-    if (ticket.estado === 'pagado') stats.pagado++;
-    if (ticket.estado === 'cancelado') stats.cancelado++;
+    const qrCount = getTicketQrCount(ticket);
+    if (ticket.estado === 'pagado') stats.pagado += qrCount;
+    if (ticket.estado === 'cancelado') stats.cancelado += qrCount;
     stats.entregado += getDeliveredQrCount(ticket);
   });
   return stats;
