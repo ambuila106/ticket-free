@@ -17,6 +17,9 @@ functions/.env
 # Caché local de Firebase CLI (no secretos; evita ruido en commits)
 .firebase/
 
+# Copias de seguridad locales (sensibles)
+backups/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

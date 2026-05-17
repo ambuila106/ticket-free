@@ -112,23 +112,41 @@ const eventosOrdenados = computed(() => {
 let unsubscribe = null;
 
 onMounted(async () => {
-  user.value = authService.getCurrentUser();
-  
-  if (user.value) {
-    // Obtener discoteca
-    const discotecas = await databaseService.getDiscotecas(user.value.uid);
-    discoteca.value = discotecas[discotecaId];
-    
-    // Suscribirse a eventos
-    unsubscribe = databaseService.subscribeToEventos(
-      user.value.uid,
-      discotecaId,
-      (data) => {
-        eventos.value = data;
-        loading.value = false;
-      }
-    );
+  user.value = await authService.waitForAuthReady();
+
+  if (!user.value) {
+    loading.value = false;
+    router.push('/');
+    return;
   }
+
+  await authService.getIdToken();
+
+  try {
+    // Carga inicial para mostrar datos incluso si la suscripción falla.
+    const discotecas = await databaseService.getDiscotecas(user.value.uid, user.value.email);
+    discoteca.value = discotecas[discotecaId] || null;
+    eventos.value = await databaseService.getEventos(user.value.uid, discotecaId, user.value.email);
+  } catch (error) {
+    console.error('Error cargando discoteca/eventos:', error);
+  } finally {
+    loading.value = false;
+  }
+  
+  // Suscribirse a eventos
+  unsubscribe = databaseService.subscribeToEventos(
+    user.value.uid,
+    discotecaId,
+    (data) => {
+      eventos.value = data;
+      loading.value = false;
+    },
+    (error) => {
+      console.error('Error en suscripción de eventos:', error);
+      loading.value = false;
+    },
+    user.value.email
+  );
 });
 
 onUnmounted(() => {
@@ -157,7 +175,7 @@ const createEvento = async () => {
       fecha: newEvento.value.fecha ? newEvento.value.fecha.trim().substring(0, 100) : '',
       ubicacion: newEvento.value.ubicacion ? newEvento.value.ubicacion.trim().substring(0, 200) : '',
       descripcion: newEvento.value.descripcion ? newEvento.value.descripcion.trim().substring(0, 500) : ''
-    });
+    }, user.value.email);
     showCreateModal.value = false;
     newEvento.value = { nombre: '', fecha: '', ubicacion: '', descripcion: '' };
   } catch (error) {

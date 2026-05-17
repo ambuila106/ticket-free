@@ -11,14 +11,21 @@
     </header>
 
     <main class="dashboard-main">
-      <button @click="showCreateModal = true" class="create-btn">
-        + Crear Nueva Discoteca
-      </button>
+      <div class="top-actions">
+        <button @click="showCreateModal = true" class="create-btn">
+          + Crear Nueva Discoteca
+        </button>
+        <button @click="downloadBackup" class="backup-btn" :disabled="backingUp">
+          {{ backingUp ? 'Generando backup...' : 'Descargar backup JSON' }}
+        </button>
+      </div>
 
       <div v-if="loading" class="loading">Cargando...</div>
 
       <div v-else-if="Object.keys(discotecas).length === 0" class="empty-state">
         <p>No tienes discotecas aún. ¡Crea tu primera discoteca!</p>
+        <p class="empty-hint">Cuenta actual: {{ user?.email || 'sin correo' }}</p>
+        <p class="empty-hint">Si esperabas ver datos, confirma que entraste con el correo correcto.</p>
       </div>
 
       <div v-else class="discotecas-grid">
@@ -73,6 +80,7 @@ const user = ref(null);
 const discotecas = ref({});
 const loading = ref(true);
 const showCreateModal = ref(false);
+const backingUp = ref(false);
 const newDiscoteca = ref({
   nombre: '',
   descripcion: '',
@@ -82,18 +90,38 @@ const newDiscoteca = ref({
 let unsubscribe = null;
 
 onMounted(async () => {
-  user.value = authService.getCurrentUser();
-  
-  if (user.value) {
-    // Suscribirse a cambios en discotecas (usar uid en lugar de email)
-    unsubscribe = databaseService.subscribeToDiscotecas(
-      user.value.uid,
-      (data) => {
-        discotecas.value = data;
-        loading.value = false;
-      }
-    );
+  user.value = await authService.waitForAuthReady();
+
+  if (!user.value) {
+    loading.value = false;
+    router.push('/');
+    return;
   }
+
+  await authService.getIdToken();
+
+  try {
+    // Carga inicial para evitar spinner infinito si falla la suscripción.
+    discotecas.value = await databaseService.getDiscotecas(user.value.uid, user.value.email);
+  } catch (error) {
+    console.error('Error cargando discotecas:', error);
+  } finally {
+    loading.value = false;
+  }
+
+  // Suscribirse a cambios en discotecas (usar uid en lugar de email)
+  unsubscribe = databaseService.subscribeToDiscotecas(
+    user.value.uid,
+    (data) => {
+      discotecas.value = data;
+      loading.value = false;
+    },
+    (error) => {
+      console.error('Error en suscripción de discotecas:', error);
+      loading.value = false;
+    },
+    user.value.email
+  );
 });
 
 onUnmounted(() => {
@@ -124,7 +152,7 @@ const createDiscoteca = async () => {
       ubicacion: newDiscoteca.value.ubicacion ? newDiscoteca.value.ubicacion.trim().substring(0, 200) : ''
     };
     
-    await databaseService.createDiscoteca(user.value.uid, discotecaData);
+    await databaseService.createDiscoteca(user.value.uid, discotecaData, user.value.email);
     showCreateModal.value = false;
     newDiscoteca.value = { nombre: '', descripcion: '', ubicacion: '' };
   } catch (error) {
@@ -135,6 +163,40 @@ const createDiscoteca = async () => {
 
 const goToDiscoteca = (discotecaId) => {
   router.push(`/discoteca/${discotecaId}`);
+};
+
+const downloadBackup = async () => {
+  if (!user.value || backingUp.value) return;
+
+  backingUp.value = true;
+  try {
+    const backup = await databaseService.exportUserBackup(user.value.uid, user.value.email);
+    const payload = {
+      app: 'ticket-free',
+      generatedAt: new Date().toISOString(),
+      ownerKey: backup.ownerKey,
+      ownerUid: user.value.uid,
+      ownerEmail: user.value.email || '',
+      data: backup.data || {}
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    link.href = url;
+    link.download = `backup-ticket-free-${backup.ownerKey}-${stamp}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    alert('Copia de seguridad descargada correctamente.');
+  } catch (error) {
+    console.error('Error generando backup:', error);
+    alert('No se pudo generar la copia de seguridad.');
+  } finally {
+    backingUp.value = false;
+  }
 };
 
 const logout = async () => {
@@ -176,6 +238,10 @@ const logout = async () => {
   gap: 15px;
 }
 
+.user-info span {
+  color: #333;
+}
+
 .logout-btn {
   padding: 8px 16px;
   background: #f5f5f5;
@@ -183,6 +249,7 @@ const logout = async () => {
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
+  color: #333;
 }
 
 .logout-btn:hover {
@@ -195,6 +262,13 @@ const logout = async () => {
   padding: 20px;
 }
 
+.top-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
 .create-btn {
   background: #667eea;
   color: white;
@@ -204,7 +278,6 @@ const logout = async () => {
   font-size: 16px;
   font-weight: 500;
   cursor: pointer;
-  margin-bottom: 30px;
   transition: background 0.3s;
 }
 
@@ -212,10 +285,37 @@ const logout = async () => {
   background: #5568d3;
 }
 
+.backup-btn {
+  background: #28a745;
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.backup-btn:hover:not(:disabled) {
+  background: #218838;
+}
+
+.backup-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .loading, .empty-state {
   text-align: center;
   padding: 40px;
   color: #666;
+}
+
+.empty-hint {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #777;
 }
 
 .discotecas-grid {
@@ -382,11 +482,20 @@ const logout = async () => {
     padding: 15px;
   }
 
+  .top-actions {
+    margin-bottom: 20px;
+  }
+
   .create-btn {
     width: 100%;
     padding: 14px;
     font-size: 15px;
-    margin-bottom: 20px;
+  }
+
+  .backup-btn {
+    width: 100%;
+    padding: 14px;
+    font-size: 15px;
   }
 
   .discotecas-grid {

@@ -194,6 +194,7 @@
             <div class="multi-qr-grid">
               <div v-for="(url, i) in ticketPreviewItems" :key="i" class="multi-qr-cell">
                 <span class="multi-qr-label">Entrada {{ i + 1 }} / {{ ticketPreviewItems.length }}</span>
+                <span v-if="evento?.fecha" class="multi-qr-date">📅 {{ evento.fecha }}</span>
                 <img :src="url" alt="" class="multi-qr-img" />
                 <button type="button" class="multi-qr-dl" @click="downloadPreviewQr(url, i)">Descargar</button>
               </div>
@@ -539,14 +540,22 @@ const getActionClass = (accion) => {
 };
 
 onMounted(async () => {
-  user.value = authService.getCurrentUser();
+  user.value = await authService.waitForAuthReady();
   const userRole = localStorage.getItem('userRole');
   isOrganizador.value = userRole === 'organizador';
-  
-  if (user.value) {
+
+  if (!user.value) {
+    loading.value = false;
+    router.push('/');
+    return;
+  }
+
+  await authService.getIdToken();
+
+  try {
     // Determinar uid del propietario
     if (isOrganizador.value) {
-      ownerUid.value = user.value.uid;
+      ownerUid.value = await databaseService.resolveUserDataKey(user.value.uid, user.value.email);
     } else {
       // Si es colaborador, buscar el evento para obtener el ownerUid
       const eventosColaborador = await databaseService.getEventsAsCollaborator(user.value.email);
@@ -557,11 +566,11 @@ onMounted(async () => {
         ownerUid.value = eventoEncontrado.ownerUid;
         evento.value = eventoEncontrado;
       } else {
-        // Si no se encuentra, intentar con el uid del usuario
-        ownerUid.value = user.value.uid;
+        // Si no se encuentra, intentar con el UID o clave legacy del usuario actual.
+        ownerUid.value = await databaseService.resolveUserDataKey(user.value.uid, user.value.email);
       }
     }
-    
+
     // Obtener evento si no se obtuvo antes
     if (!evento.value) {
       evento.value = await databaseService.getEvento(ownerUid.value, discotecaId, eventoId);
@@ -579,7 +588,16 @@ onMounted(async () => {
         };
       }
     }
-    
+
+    // Carga inicial para evitar spinner infinito si la suscripción tarda/falla.
+    try {
+      tickets.value = await databaseService.getTickets(ownerUid.value, discotecaId, eventoId);
+    } catch (error) {
+      console.error('Error cargando tickets:', error);
+    } finally {
+      loading.value = false;
+    }
+
     // Suscribirse a tickets
     unsubscribe = databaseService.subscribeToTickets(
       ownerUid.value,
@@ -587,6 +605,10 @@ onMounted(async () => {
       eventoId,
       (data) => {
         tickets.value = data;
+        loading.value = false;
+      },
+      (error) => {
+        console.error('Error en suscripción de tickets:', error);
         loading.value = false;
       }
     );
@@ -603,6 +625,9 @@ onMounted(async () => {
         }
       );
     }
+  } catch (error) {
+    console.error('Error cargando evento:', error);
+    loading.value = false;
   }
 });
 
@@ -1492,7 +1517,8 @@ const goBack = () => {
 }
 
 .ticket-modal-wide {
-  max-width: 920px;
+  width: min(96vw, 1280px);
+  max-width: 1280px;
 }
 
 .multi-qr-hint {
@@ -1504,7 +1530,7 @@ const goBack = () => {
 
 .multi-qr-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 16px;
   margin-bottom: 16px;
 }
@@ -1525,9 +1551,16 @@ const goBack = () => {
   margin-bottom: 8px;
 }
 
+.multi-qr-date {
+  display: block;
+  font-size: 11px;
+  color: #7a7a7a;
+  margin-bottom: 10px;
+}
+
 .multi-qr-img {
   width: 100%;
-  max-width: 200px;
+  max-width: 190px;
   height: auto;
   aspect-ratio: 1;
   border-radius: 8px;
@@ -2042,6 +2075,10 @@ const goBack = () => {
     font-size: 1.3rem;
   }
 
+  .multi-qr-date {
+    font-size: 10px;
+  }
+
   .ticket-actions-modal {
     flex-direction: column;
   }
@@ -2112,6 +2149,33 @@ const goBack = () => {
 
   .stat-value {
     font-size: 1.8rem;
+  }
+}
+
+@media (min-width: 601px) and (max-width: 1264px) {
+  .ticket-modal-wide {
+    width: min(96vw, 1180px);
+    max-width: 1180px;
+  }
+
+  .multi-qr-grid {
+    grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+    gap: 14px;
+  }
+}
+
+@media (min-width: 1265px) {
+  .ticket-modal-wide {
+    width: min(96vw, 1500px);
+    max-width: 1500px;
+  }
+
+  .multi-qr-grid {
+    grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+  }
+
+  .multi-qr-date {
+    font-size: 12px;
   }
 }
 </style>

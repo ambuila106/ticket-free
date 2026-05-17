@@ -1,4 +1,7 @@
 {
+  "database": {
+    "rules": "FIREBASE_SECURITY_RULES.json"
+  },
   "functions": {
     "source": "functions"
   },

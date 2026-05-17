@@ -22,13 +22,79 @@ function collaboratorEmailToKey(email) {
   return sanitizeCollaboratorEmail(email).replace(/[@.]/g, "_");
 }
 
+function sanitizeUserEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function userEmailToLegacyKey(email) {
+  return sanitizeUserEmail(email).replace(/[@.]/g, "_");
+}
+
+const userDataKeyCache = new Map();
+
+async function resolveUserDataKeyInternal(uid, userEmail = "") {
+  const normalizedUid = String(uid || "").trim();
+  if (!normalizedUid) throw new Error("UID inválido");
+
+  const cacheKey = `${normalizedUid}|${sanitizeUserEmail(userEmail)}`;
+  if (userDataKeyCache.has(cacheKey)) {
+    return userDataKeyCache.get(cacheKey);
+  }
+
+  try {
+    const uidRef = ref(database, `users/${normalizedUid}`);
+    const uidSnapshot = await get(uidRef);
+    if (uidSnapshot.exists()) {
+      userDataKeyCache.set(cacheKey, normalizedUid);
+      return normalizedUid;
+    }
+  } catch (error) {
+    // Puede pasar justo al restaurar sesión: devolvemos UID para no bloquear.
+    userDataKeyCache.set(cacheKey, normalizedUid);
+    return normalizedUid;
+  }
+
+  const legacyKey = userEmailToLegacyKey(userEmail);
+  if (legacyKey && legacyKey !== normalizedUid) {
+    try {
+      const legacyRef = ref(database, `users/${legacyKey}`);
+      const legacySnapshot = await get(legacyRef);
+      if (legacySnapshot.exists()) {
+        userDataKeyCache.set(cacheKey, legacyKey);
+        return legacyKey;
+      }
+    } catch (error) {
+      // Si reglas no permiten leer clave legacy, seguimos con UID sin bloquear el flujo.
+    }
+  }
+
+  userDataKeyCache.set(cacheKey, normalizedUid);
+  return normalizedUid;
+}
+
 // Estructura: uid-discoteca-evento (usamos uid en lugar de email para evitar caracteres especiales)
 export const databaseService = {
+  async resolveUserDataKey(uid, userEmail = "") {
+    return resolveUserDataKeyInternal(uid, userEmail);
+  },
+
+  async exportUserBackup(uid, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const userRef = ref(database, `users/${ownerKey}`);
+    const snapshot = await get(userRef);
+    return {
+      ownerKey,
+      exportedAt: Date.now(),
+      data: snapshot.exists() ? snapshot.val() : {}
+    };
+  },
+
   // ========== DISCOTECAS ==========
   
   // Crear discoteca
-  async createDiscoteca(uid, discotecaData) {
-    const discotecaRef = ref(database, `users/${uid}/discotecas/${discotecaData.id}`);
+  async createDiscoteca(uid, discotecaData, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const discotecaRef = ref(database, `users/${ownerKey}/discotecas/${discotecaData.id}`);
     await set(discotecaRef, {
       ...discotecaData,
       createdAt: Date.now()
@@ -37,26 +103,49 @@ export const databaseService = {
   },
 
   // Obtener discotecas de un usuario
-  async getDiscotecas(uid) {
-    const discotecasRef = ref(database, `users/${uid}/discotecas`);
+  async getDiscotecas(uid, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const discotecasRef = ref(database, `users/${ownerKey}/discotecas`);
     const snapshot = await get(discotecasRef);
     return snapshot.exists() ? snapshot.val() : {};
   },
 
   // Escuchar cambios en discotecas
-  subscribeToDiscotecas(uid, callback) {
-    const discotecasRef = ref(database, `users/${uid}/discotecas`);
-    return onValue(discotecasRef, (snapshot) => {
-      callback(snapshot.exists() ? snapshot.val() : {});
-    });
+  subscribeToDiscotecas(uid, callback, onError = null, userEmail = "") {
+    let unsubscribe = null;
+    let active = true;
+
+    resolveUserDataKeyInternal(uid, userEmail)
+      .then((ownerKey) => {
+        if (!active) return;
+        const discotecasRef = ref(database, `users/${ownerKey}/discotecas`);
+        unsubscribe = onValue(
+          discotecasRef,
+          (snapshot) => {
+            callback(snapshot.exists() ? snapshot.val() : {});
+          },
+          (error) => {
+            if (typeof onError === "function") onError(error);
+          }
+        );
+      })
+      .catch((error) => {
+        if (typeof onError === "function") onError(error);
+      });
+
+    return () => {
+      active = false;
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
   },
 
   // ========== EVENTOS ==========
 
   // Crear evento
-  async createEvento(uid, discotecaId, eventoData) {
-    const eventoId = push(ref(database, `users/${uid}/discotecas/${discotecaId}/eventos`)).key;
-    const eventoRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}`);
+  async createEvento(uid, discotecaId, eventoData, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const eventoId = push(ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos`)).key;
+    const eventoRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}`);
     await set(eventoRef, {
       ...eventoData,
       id: eventoId,
@@ -66,23 +155,46 @@ export const databaseService = {
   },
 
   // Obtener eventos de una discoteca
-  async getEventos(uid, discotecaId) {
-    const eventosRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos`);
+  async getEventos(uid, discotecaId, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const eventosRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos`);
     const snapshot = await get(eventosRef);
     return snapshot.exists() ? snapshot.val() : {};
   },
 
   // Escuchar cambios en eventos
-  subscribeToEventos(uid, discotecaId, callback) {
-    const eventosRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos`);
-    return onValue(eventosRef, (snapshot) => {
-      callback(snapshot.exists() ? snapshot.val() : {});
-    });
+  subscribeToEventos(uid, discotecaId, callback, onError = null, userEmail = "") {
+    let unsubscribe = null;
+    let active = true;
+
+    resolveUserDataKeyInternal(uid, userEmail)
+      .then((ownerKey) => {
+        if (!active) return;
+        const eventosRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos`);
+        unsubscribe = onValue(
+          eventosRef,
+          (snapshot) => {
+            callback(snapshot.exists() ? snapshot.val() : {});
+          },
+          (error) => {
+            if (typeof onError === "function") onError(error);
+          }
+        );
+      })
+      .catch((error) => {
+        if (typeof onError === "function") onError(error);
+      });
+
+    return () => {
+      active = false;
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
   },
 
   // Obtener un evento específico
-  async getEvento(uid, discotecaId, eventoId) {
-    const eventoRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}`);
+  async getEvento(uid, discotecaId, eventoId, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const eventoRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}`);
     const snapshot = await get(eventoRef);
     return snapshot.exists() ? snapshot.val() : null;
   },
@@ -90,7 +202,8 @@ export const databaseService = {
   // ========== TICKETS ==========
 
   // Crear ticket (venta) — un código QR por boleta
-  async createTicket(uid, discotecaId, eventoId, ticketData) {
+  async createTicket(uid, discotecaId, eventoId, ticketData, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
     let qty = parseInt(ticketData.cantidadBoletas, 10);
     if (!Number.isFinite(qty) || qty < 1) qty = 1;
     if (qty > 100) qty = 100;
@@ -105,7 +218,7 @@ export const databaseService = {
       }
     }
 
-    const ticketId = push(ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`)).key;
+    const ticketId = push(ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`)).key;
     const ticket = {
       id: ticketId,
       secureCode: secureCodes[0],
@@ -117,30 +230,53 @@ export const databaseService = {
       updatedAt: Date.now(),
     };
 
-    const ticketRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`);
+    const ticketRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`);
     await set(ticketRef, ticket);
 
     return { ticketId, secureCode: secureCodes[0], secureCodes, ticket };
   },
 
   // Obtener tickets de un evento
-  async getTickets(uid, discotecaId, eventoId) {
-    const ticketsRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`);
+  async getTickets(uid, discotecaId, eventoId, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const ticketsRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`);
     const snapshot = await get(ticketsRef);
     return snapshot.exists() ? snapshot.val() : {};
   },
 
   // Escuchar cambios en tickets
-  subscribeToTickets(uid, discotecaId, eventoId, callback) {
-    const ticketsRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`);
-    return onValue(ticketsRef, (snapshot) => {
-      callback(snapshot.exists() ? snapshot.val() : {});
-    });
+  subscribeToTickets(uid, discotecaId, eventoId, callback, onError = null, userEmail = "") {
+    let unsubscribe = null;
+    let active = true;
+
+    resolveUserDataKeyInternal(uid, userEmail)
+      .then((ownerKey) => {
+        if (!active) return;
+        const ticketsRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`);
+        unsubscribe = onValue(
+          ticketsRef,
+          (snapshot) => {
+            callback(snapshot.exists() ? snapshot.val() : {});
+          },
+          (error) => {
+            if (typeof onError === "function") onError(error);
+          }
+        );
+      })
+      .catch((error) => {
+        if (typeof onError === "function") onError(error);
+      });
+
+    return () => {
+      active = false;
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
   },
 
   // Cambiar estado de ticket (por QR)
-  async updateTicketStatus(uid, discotecaId, eventoId, ticketId, nuevoEstado) {
-    const ticketRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`);
+  async updateTicketStatus(uid, discotecaId, eventoId, ticketId, nuevoEstado, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const ticketRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`);
     await update(ticketRef, {
       estado: nuevoEstado,
       updatedAt: Date.now()
@@ -152,8 +288,9 @@ export const databaseService = {
    * Si solo hay un código, marca el ticket entero como entregado.
    * @returns {Promise<{ yaUsado?: boolean, completo: boolean, entregadas?: number, total?: number, modo?: string }>}
    */
-  async marcarBoletaEntregada(uid, discotecaId, eventoId, ticketId, codigoEscaneado) {
-    const ticketRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`);
+  async marcarBoletaEntregada(uid, discotecaId, eventoId, ticketId, codigoEscaneado, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const ticketRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`);
     const snap = await get(ticketRef);
     if (!snap.exists()) throw new Error("Ticket no encontrado");
     const ticket = snap.val();
@@ -225,17 +362,18 @@ export const databaseService = {
   // ========== COLABORADORES ==========
 
   // Agregar colaborador a un evento (usando email codificado como clave)
-  async addCollaborator(uid, discotecaId, eventoId, collaboratorEmail, permisos = {}, eventoMeta = {}) {
+  async addCollaborator(uid, discotecaId, eventoId, collaboratorEmail, permisos = {}, eventoMeta = {}, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
     const normalizedEmail = sanitizeCollaboratorEmail(collaboratorEmail);
     const collaboratorKey = collaboratorEmailToKey(normalizedEmail);
     const timestamp = Date.now();
     const collaboratorRef = ref(
       database,
-      `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/colaboradores/${collaboratorKey}`
+      `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}/colaboradores/${collaboratorKey}`
     );
     const collaboratorEventIndexRef = ref(
       database,
-      `collaboratorEvents/${collaboratorKey}/${uid}/${discotecaId}/${eventoId}`
+      `collaboratorEvents/${collaboratorKey}/${ownerKey}/${discotecaId}/${eventoId}`
     );
     const collaboratorData = {
       email: normalizedEmail,
@@ -254,7 +392,7 @@ export const databaseService = {
     // Si falla por reglas no actualizadas, no deshacemos el alta principal.
     try {
       await set(collaboratorEventIndexRef, {
-        ownerUid: uid,
+        ownerUid: ownerKey,
         discotecaId,
         eventoId,
         nombre: eventoMeta.nombre || "",

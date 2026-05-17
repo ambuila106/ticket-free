@@ -36,6 +36,7 @@
         <div v-else-if="qrItems.length" class="qr-grid" :class="{ many: qrItems.length > 4 }">
           <div v-for="(item, i) in qrItems" :key="i" class="qr-cell">
             <span class="qr-label">Entrada {{ i + 1 }} / {{ qrItems.length }}</span>
+            <span v-if="success?.fecha" class="qr-event-date">📅 {{ success.fecha }}</span>
             <img :src="item.url" :alt="'QR entrada ' + (i + 1)" class="qr-img" />
             <button type="button" class="mini-dl" @click="downloadOne(item.url, i)">Descargar</button>
           </div>
@@ -252,6 +253,13 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 
+.qr-event-date {
+  display: block;
+  font-size: 0.75rem;
+  color: #666;
+  margin-bottom: 10px;
+}
+
 .qr-img {
   width: 100%;
   max-width: 220px;
@@ -315,5 +323,17 @@ onUnmounted(() => {
 
 .link-secondary:hover {
   text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  .qr-event-date {
+    font-size: 0.7rem;
+  }
+}
+
+@media (min-width: 1265px) {
+  .qr-event-date {
+    font-size: 0.82rem;
+  }
 }
 </style>
