@@ -21,6 +21,19 @@
         ".write": false
       }
     },
+    "collaboratorEvents": {
+      "$collaboratorKey": {
+        ".read": "auth != null",
+        "$ownerUid": {
+          "$discotecaId": {
+            "$eventoId": {
+              ".write": "auth != null && auth.uid === $ownerUid",
+              ".validate": "newData.hasChildren(['ownerUid', 'discotecaId', 'eventoId', 'nombre', 'fecha', 'ubicacion', 'addedAt'])"
+            }
+          }
+        }
+      }
+    },
     "users": {
       "$uid": {
         ".read": "$uid === auth.uid",
@@ -38,7 +51,7 @@
                 },
                 "tickets": {
                   ".read": "$uid === auth.uid || (auth.token.email != null && root.child('users').child($uid).child('discotecas').child($discotecaId).child('eventos').child($eventoId).child('colaboradores').child(auth.token.email.replace('@', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_')).exists())",
-                  ".write": "$uid === auth.uid || (auth.token.email != null && root.child('users').child($uid).child('discotecas').child($discotecaId).child('eventos').child($eventoId).child('colaboradores').child(auth.token.email.replace('@', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_')).child('permisos').child('crearTickets').val() === true)",
+                  ".write": "$uid === auth.uid || (auth.token.email != null && root.child('users').child($uid).child('discotecas').child($discotecaId).child('eventos').child($eventoId).child('colaboradores').child(auth.token.email.replace('@', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_')).child('permisos').child('crearTickets').val() === true || root.child('users').child($uid).child('discotecas').child($discotecaId).child('eventos').child($eventoId).child('colaboradores').child(auth.token.email.replace('@', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_')).child('permisos').child('leerQR').val() === true)",
                   "$ticketId": {
                     ".validate": "newData.hasChildren(['secureCode', 'estado', 'createdAt', 'cantidadBoletas']) && newData.child('estado').val().matches(/^(pagado|entregado|cancelado)$/) && newData.child('cantidadBoletas').val() > 0 && newData.child('cantidadBoletas').val() <= 100 && newData.child('secureCode').isString() && newData.child('secureCode').val().length > 0"
                   }

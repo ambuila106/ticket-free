@@ -12,16 +12,16 @@
 
       <div v-if="loading" class="loading">Cargando eventos...</div>
 
-      <div v-else-if="Object.keys(eventos).length === 0" class="empty-state">
+      <div v-else-if="eventosOrdenados.length === 0" class="empty-state">
         <p>No hay eventos aún. ¡Crea tu primer evento!</p>
       </div>
 
       <div v-else class="eventos-grid">
         <div 
-          v-for="(evento, id) in eventos" 
-          :key="id"
+          v-for="evento in eventosOrdenados" 
+          :key="evento.id"
           class="evento-card"
-          @click="goToEvento(id)"
+          @click="goToEvento(evento.id)"
         >
           <h2>{{ evento.nombre }}</h2>
           <p class="evento-fecha">📅 {{ evento.fecha }}</p>
@@ -63,7 +63,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { authService } from '../services/authService';
 import { databaseService } from '../services/databaseService';
@@ -81,6 +81,32 @@ const newEvento = ref({
   fecha: '',
   ubicacion: '',
   descripcion: ''
+});
+
+const getEventoTimestamp = (evento) => {
+  const createdAt = Number(evento?.createdAt);
+  if (Number.isFinite(createdAt) && createdAt > 0) return createdAt;
+
+  const updatedAt = Number(evento?.updatedAt);
+  if (Number.isFinite(updatedAt) && updatedAt > 0) return updatedAt;
+
+  const parsedFromFecha = Date.parse(String(evento?.fecha || ''));
+  return Number.isFinite(parsedFromFecha) ? parsedFromFecha : 0;
+};
+
+const eventosOrdenados = computed(() => {
+  return Object.entries(eventos.value || {})
+    .map(([id, evento]) => ({ id, ...evento }))
+    .sort((a, b) => {
+      const timeDiff = getEventoTimestamp(b) - getEventoTimestamp(a);
+      if (timeDiff !== 0) return timeDiff;
+
+      return String(a.nombre || '').localeCompare(
+        String(b.nombre || ''),
+        'es',
+        { sensitivity: 'base' }
+      );
+    });
 });
 
 let unsubscribe = null;

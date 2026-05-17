@@ -80,7 +80,7 @@
             <span class="stat-value">{{ ticketsByStatus.pagado }}</span>
           </div>
           <div class="stat-card entregado">
-            <span class="stat-label">Entregados</span>
+            <span class="stat-label">QR entregados</span>
             <span class="stat-value">{{ ticketsByStatus.entregado }}</span>
           </div>
           <div class="stat-card cancelado">
@@ -145,17 +145,17 @@
         <form @submit.prevent="createTicket">
           <div class="form-group">
             <label>Nombre del cliente</label>
-            <input v-model="newTicket.nombreCliente" required type="text" />
+            <input v-model="newTicket.nombreCliente" type="text" />
           </div>
           <div class="form-group">
             <label>Teléfono</label>
-            <input v-model="newTicket.telefono" required type="tel" />
+            <input v-model="newTicket.telefono" type="tel" />
           </div>
           <div class="form-group">
             <label>Correo (opcional)</label>
             <input
               v-model="newTicket.emailCliente"
-              type="email"
+              type="text"
               autocomplete="email"
               placeholder="cliente@correo.com"
             />
@@ -167,7 +167,7 @@
           </div>
           <div class="form-group">
             <label>Cantidad de boletas/manillas</label>
-            <input v-model.number="newTicket.cantidadBoletas" type="number" min="1" value="1" required />
+            <input v-model="newTicket.cantidadBoletas" type="text" placeholder="1" />
           </div>
           <div class="form-group">
             <label>Precio total</label>
@@ -378,7 +378,7 @@ import { bitacoraService } from '../services/bitacoraService';
 import { getResendTicketQrEmailUrl } from '../services/wompiService';
 import { generateQRCode, generateTicketImage } from '../utils/qrGenerator';
 import { getTicketSecureCodes, formatCodesPreview } from '../utils/ticketCodes';
-import { validators, sanitizeInput, sanitizeNumber } from '../utils/validation';
+import { validators, sanitizeInput } from '../utils/validation';
 
 const route = useRoute();
 const router = useRouter();
@@ -439,12 +439,26 @@ const publicPurchaseLink = computed(() => {
 
 const totalTickets = computed(() => Object.keys(tickets.value).length);
 
+const getDeliveredQrCount = (ticket) => {
+  const totalCodes = getTicketSecureCodes(ticket).length || Math.max(1, Number(ticket?.cantidadBoletas) || 1);
+  const canjeadas = ticket?.entradasCanjeadas && typeof ticket.entradasCanjeadas === 'object'
+    ? Object.keys(ticket.entradasCanjeadas).length
+    : 0;
+
+  if (canjeadas > 0) {
+    return Math.min(canjeadas, totalCodes);
+  }
+
+  // Ticket de 1 boleta marcado como entregado (flujo legacy/single QR).
+  return ticket?.estado === 'entregado' ? 1 : 0;
+};
+
 const ticketsByStatus = computed(() => {
   const stats = { pagado: 0, entregado: 0, cancelado: 0 };
   Object.values(tickets.value).forEach(ticket => {
-    if (stats[ticket.estado] !== undefined) {
-      stats[ticket.estado]++;
-    }
+    if (ticket.estado === 'pagado') stats.pagado++;
+    if (ticket.estado === 'cancelado') stats.cancelado++;
+    stats.entregado += getDeliveredQrCount(ticket);
   });
   return stats;
 });
@@ -599,32 +613,7 @@ const createTicket = async () => {
     }
   }
   
-  // Validar y sanitizar datos
-  if (!validators.text(newTicket.value.nombreCliente, 100)) {
-    alert('Nombre del cliente inválido. Debe tener entre 1 y 100 caracteres.');
-    return;
-  }
-  
-  if (!validators.phone(newTicket.value.telefono)) {
-    alert('Teléfono inválido. Debe contener entre 7 y 15 dígitos.');
-    return;
-  }
-
   const emailTrim = String(newTicket.value.emailCliente || '').trim();
-  if (emailTrim && !validators.email(emailTrim)) {
-    alert('Correo inválido. Déjalo vacío o usa un email válido.');
-    return;
-  }
-  
-  if (!validators.cantidadBoletas(newTicket.value.cantidadBoletas)) {
-    alert('Cantidad de boletas debe ser entre 1 y 100');
-    return;
-  }
-  
-  if (!validators.precio(newTicket.value.precio)) {
-    alert('Precio inválido. Debe ser un número válido o "Gratis".');
-    return;
-  }
   
   creatingTicket.value = true;
   
@@ -632,10 +621,10 @@ const createTicket = async () => {
     const ticketData = {
       nombreCliente: sanitizeInput(newTicket.value.nombreCliente),
       telefono: sanitizeInput(newTicket.value.telefono),
-      emailCliente: emailTrim.substring(0, 120),
+      emailCliente: sanitizeInput(emailTrim),
       tipoEntrada: sanitizeInput(newTicket.value.tipoEntrada || ''),
-      precio: sanitizeInput(newTicket.value.precio || 'Gratis'),
-      cantidadBoletas: sanitizeNumber(newTicket.value.cantidadBoletas, 1, 100),
+      precio: sanitizeInput(newTicket.value.precio || ''),
+      cantidadBoletas: newTicket.value.cantidadBoletas,
       eventoNombre: evento.value.nombre,
       fecha: evento.value.fecha,
       ubicacion: evento.value.ubicacion
@@ -727,7 +716,9 @@ const resendQrToEmail = async (ticketId) => {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(data.error || 'No se pudo enviar el correo');
+      let msg = data.error || 'No se pudo enviar el correo';
+      if (data.hint) msg += `\n\n${data.hint}`;
+      throw new Error(msg);
     }
     alert('Correo con el QR enviado correctamente');
   } catch (e) {
@@ -844,47 +835,63 @@ const addCollaborator = async () => {
     alert('Solo los organizadores pueden agregar colaboradores');
     return;
   }
+
+  const normalizedEmail = collaboratorEmail.value.trim().toLowerCase();
   
   // Validar email
-  if (!validators.email(collaboratorEmail.value)) {
+  if (!validators.email(normalizedEmail)) {
     alert('Email inválido');
     return;
   }
   
   // No permitir agregarse a sí mismo
-  if (collaboratorEmail.value === user.value.email) {
+  if (normalizedEmail === (user.value.email || '').trim()) {
     alert('No puedes agregarte como colaborador');
     return;
   }
   
-  await databaseService.addCollaborator(
-    ownerUid.value,
-    discotecaId,
-    eventoId,
-    sanitizeInput(collaboratorEmail.value),
-    collaboratorPermisos.value
-  );
-  
-  // Registrar en bitácora
-  await bitacoraService.registrarAccion(
-    ownerUid.value,
-    discotecaId,
-    eventoId,
-    'colaborador_agregado',
-    {
-      colaboradorEmail: collaboratorEmail.value,
-      permisos: collaboratorPermisos.value
+  try {
+    const addResult = await databaseService.addCollaborator(
+      ownerUid.value,
+      discotecaId,
+      eventoId,
+      sanitizeInput(normalizedEmail),
+      collaboratorPermisos.value,
+      {
+        nombre: evento.value?.nombre || '',
+        fecha: evento.value?.fecha || '',
+        ubicacion: evento.value?.ubicacion || ''
+      }
+    );
+    
+    // Registrar en bitácora
+    await bitacoraService.registrarAccion(
+      ownerUid.value,
+      discotecaId,
+      eventoId,
+      'colaborador_agregado',
+      {
+        colaboradorEmail: normalizedEmail,
+        permisos: collaboratorPermisos.value
+      }
+    );
+    
+    showCollaboratorModal.value = false;
+    collaboratorEmail.value = '';
+    collaboratorPermisos.value = {
+      crearTickets: true,
+      leerQR: true,
+      verReportes: false
+    };
+    if (addResult?.indexSaved === false) {
+      alert('Colaborador agregado, pero falta habilitar reglas nuevas para que vea el evento en su panel.');
+    } else {
+      alert('Colaborador agregado exitosamente');
     }
-  );
-  
-  showCollaboratorModal.value = false;
-  collaboratorEmail.value = '';
-  collaboratorPermisos.value = {
-    crearTickets: true,
-    leerQR: true,
-    verReportes: false
-  };
-  alert('Colaborador agregado exitosamente');
+  } catch (error) {
+    console.error('Error agregando colaborador:', error);
+    alert(`No se pudo agregar el colaborador: ${error?.message || 'error desconocido'}`);
+  }
 };
 
 const openBitacora = async () => {
@@ -1050,7 +1057,11 @@ const copyPublicLink = async () => {
 };
 
 const goToScanner = () => {
-  router.push(`/qr-scanner/${discotecaId}/${eventoId}`);
+  if (!ownerUid.value) {
+    alert('No se pudo abrir el lector. Vuelve a entrar al evento.');
+    return;
+  }
+  router.push(`/qr-scanner/${ownerUid.value}/${discotecaId}/${eventoId}`);
 };
 
 const goBack = () => {

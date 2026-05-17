@@ -201,7 +201,23 @@ async function sendTicketQrEmailResend(opts) {
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     console.error("Resend error", res.status, body);
-    return { sent: false, reason: "resend_http" };
+    let resendMessage = "";
+    if (typeof body.message === "string") {
+      resendMessage = body.message;
+    } else if (Array.isArray(body.message)) {
+      resendMessage = body.message
+        .map((m) => (typeof m === "object" && m?.message ? m.message : String(m)))
+        .filter(Boolean)
+        .join("; ");
+    } else if (body.error) {
+      resendMessage = String(body.error);
+    }
+    return {
+      sent: false,
+      reason: "resend_http",
+      resendStatus: res.status,
+      resendMessage: resendMessage || `HTTP ${res.status}`,
+    };
   }
   return { sent: true };
 }
@@ -574,12 +590,18 @@ exports.resendTicketQrEmail = onRequest({ cors: true, invoker: "public" }, async
   });
 
   if (!result.sent) {
-    res.status(503).json({
-      error:
-        result.reason === "no_api_key"
-          ? "Correo no configurado (RESEND_API_KEY en Cloud Functions)"
-          : "No se pudo enviar el correo",
-    });
+    let error =
+      result.reason === "no_api_key"
+        ? "Correo no configurado (RESEND_API_KEY en Cloud Functions)"
+        : "No se pudo enviar el correo";
+    if (result.resendMessage) {
+      error = result.resendMessage.length > 280 ? `${result.resendMessage.slice(0, 280)}…` : result.resendMessage;
+    }
+    const hint =
+      /testing|verified domain|only send|own email|sandbox/i.test(String(result.resendMessage || ""))
+        ? "En Resend debes verificar un dominio propio y usar RESEND_FROM con ese dominio (ej. entradas@tudominio.com) para enviar a cualquier correo. Con onboarding@resend.dev solo suele llegar a tu email de cuenta."
+        : undefined;
+    res.status(503).json({ error, ...(hint ? { hint } : {}) });
     return;
   }
 

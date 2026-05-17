@@ -55,7 +55,19 @@ En cada evento: **Venta pública (Wompi)** → activar, precio COP, **Guardar**,
 
 Si `WOMPI_EVENTS_SECRET` está definido, se valida el checksum según [documentación Wompi Colombia (Eventos → Seguridad)](https://docs.wompi.co/docs/colombia/eventos/). También se comprueba que `amount_in_cents` coincida con el pedido pendiente.
 
-## 7. Desarrollo local (Vite)
+## 7. Resend: ¿solo llega a tu correo (ej. ambuila106@gmail.com)?
+
+Eso **no lo limita la app**: Resend en **modo de prueba** o con remitente **`onboarding@resend.dev`** suele permitir enviar **solo al email con el que abriste la cuenta** (o a direcciones que añadas como permitidas en el panel).
+
+**Para enviar el QR a cualquier comprador:**
+
+1. En [Resend](https://resend.com) → **Domains** → añade y verifica tu dominio (registros DNS que te indiquen).
+2. Crea un remitente del estilo `Entradas <noreply@tudominio.com>` (dominio verificado).
+3. En Cloud Run (`wompiwebhook` y `resendticketqremail`) actualiza **`RESEND_FROM`** a esa dirección y guarda **Implementar**.
+
+Sin dominio verificado, los demás correos pueden fallar o no recibir nada aunque la compra esté bien.
+
+## 8. Desarrollo local (Vite)
 
 Las peticiones a `/api/...` no llegan a Functions desde `localhost:5173`. Opciones:
 
@@ -65,3 +77,5 @@ Las peticiones a `/api/...` no llegan a Functions desde `localhost:5173`. Opcion
 ---
 
 **No subas** llaves ni secretos al repositorio. Si los expusiste en un chat público, **regenera** secretos en Wompi y actualiza las variables en Cloud Run.
+
+Si al reenviar QR el panel muestra un error de Resend, revisa el mensaje: suele indicar dominio de prueba o destinatario no permitido.

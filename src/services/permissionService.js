@@ -2,6 +2,10 @@ import { ref, get } from "firebase/database";
 import { database } from "../firebase/config";
 import { authService } from "./authService";
 
+function collaboratorEmailToKey(email) {
+  return String(email || "").trim().toLowerCase().replace(/[@.]/g, "_");
+}
+
 export const permissionService = {
   /**
    * Verifica si un colaborador tiene un permiso específico
@@ -14,7 +18,7 @@ export const permissionService = {
     if (user.uid === ownerUid) return true;
     
     // Verificar si es colaborador
-    const collaboratorKey = user.email.replace(/[@.]/g, '_');
+    const collaboratorKey = collaboratorEmailToKey(user.email);
     const collaboratorRef = ref(
       database, 
       `users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/colaboradores/${collaboratorKey}`
@@ -41,7 +45,7 @@ export const permissionService = {
     
     if (user.uid === ownerUid) return false; // El dueño no es colaborador
     
-    const collaboratorKey = user.email.replace(/[@.]/g, '_');
+    const collaboratorKey = collaboratorEmailToKey(user.email);
     const collaboratorRef = ref(
       database, 
       `users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/colaboradores/${collaboratorKey}`
@@ -72,7 +76,7 @@ export const permissionService = {
       };
     }
     
-    const collaboratorKey = user.email.replace(/[@.]/g, '_');
+    const collaboratorKey = collaboratorEmailToKey(user.email);
     const collaboratorRef = ref(
       database, 
       `users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/colaboradores/${collaboratorKey}`

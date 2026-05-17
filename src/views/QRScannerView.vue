@@ -104,6 +104,7 @@ import { getTicketSecureCodes } from '../utils/ticketCodes';
 
 const route = useRoute();
 const router = useRouter();
+const ownerUidParam = route.params.ownerUid;
 const discotecaId = route.params.discotecaId;
 const eventoId = route.params.eventoId;
 const user = ref(null);
@@ -169,13 +170,18 @@ onUnmounted(() => {
 /** Procesar código QR decodificado (cámara o archivo) */
 async function processDecodedCode(decodedText) {
   try {
-    const result = await databaseService.findTicketByCode(decodedText);
-    if (!result) {
-      error.value = 'Ticket no encontrado';
+    if (!ownerUidParam) {
+      error.value = 'Enlace del lector inválido. Abre el QR desde el evento (Leer QR).';
       return;
     }
-    if (result.discotecaId !== discotecaId || result.eventoId !== eventoId) {
-      error.value = 'Este ticket no pertenece a este evento';
+    const result = await databaseService.findTicketByCodeInEvent(
+      ownerUidParam,
+      discotecaId,
+      eventoId,
+      decodedText
+    );
+    if (!result) {
+      error.value = 'Ticket no encontrado en este evento';
       return;
     }
     scannedTicket.value = { ...result, scannedCode: decodedText };

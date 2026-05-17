@@ -14,6 +14,14 @@ import { database } from "../firebase/config";
 import { generateSecureCode } from "../utils/qrGenerator";
 import { getTicketSecureCodes } from "../utils/ticketCodes";
 
+function sanitizeCollaboratorEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function collaboratorEmailToKey(email) {
+  return sanitizeCollaboratorEmail(email).replace(/[@.]/g, "_");
+}
+
 // Estructura: uid-discoteca-evento (usamos uid en lugar de email para evitar caracteres especiales)
 export const databaseService = {
   // ========== DISCOTECAS ==========
@@ -185,95 +193,107 @@ export const databaseService = {
     };
   },
 
-  // Buscar ticket por código seguro
-  async findTicketByCode(secureCode) {
-    // Necesitamos buscar en toda la base de datos
-    // Esto es ineficiente, pero necesario para la búsqueda por código
-    const rootRef = ref(database);
-    const snapshot = await get(rootRef);
-    
+  /**
+   * Buscar ticket por código dentro de un evento (respeta reglas RTDB: no lee la raíz).
+   * ownerUid = dueño del evento en Firebase (mismo path que tickets).
+   */
+  async findTicketByCodeInEvent(ownerUid, discotecaId, eventoId, secureCode) {
+    if (!ownerUid || !discotecaId || !eventoId || !secureCode) return null;
+    const ticketsRef = ref(
+      database,
+      `users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`
+    );
+    const snapshot = await get(ticketsRef);
     if (!snapshot.exists()) return null;
-
-    const data = snapshot.val();
-    
-    // Buscar recursivamente en users/{uid}/discotecas/...
-    if (data.users) {
-      for (const uid in data.users) {
-        if (data.users[uid].discotecas) {
-          for (const discotecaId in data.users[uid].discotecas) {
-            if (data.users[uid].discotecas[discotecaId].eventos) {
-              for (const eventoId in data.users[uid].discotecas[discotecaId].eventos) {
-                if (data.users[uid].discotecas[discotecaId].eventos[eventoId].tickets) {
-                  for (const ticketId in data.users[uid].discotecas[discotecaId].eventos[eventoId].tickets) {
-                    const ticket = data.users[uid].discotecas[discotecaId].eventos[eventoId].tickets[ticketId];
-                    const codes = getTicketSecureCodes(ticket);
-                    if (codes.includes(secureCode)) {
-                      return {
-                        ticket,
-                        uid,
-                        discotecaId,
-                        eventoId,
-                        ticketId
-                      };
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
+    const tickets = snapshot.val();
+    for (const ticketId in tickets) {
+      const ticket = tickets[ticketId];
+      const codes = getTicketSecureCodes(ticket);
+      if (codes.includes(secureCode)) {
+        return {
+          ticket,
+          uid: ownerUid,
+          discotecaId,
+          eventoId,
+          ticketId,
+        };
       }
     }
-    
     return null;
   },
 
   // ========== COLABORADORES ==========
 
   // Agregar colaborador a un evento (usando email codificado como clave)
-  async addCollaborator(uid, discotecaId, eventoId, collaboratorEmail, permisos = {}) {
-    // Codificar email para usar como clave (reemplazar caracteres especiales)
-    const collaboratorKey = collaboratorEmail.replace(/[@.]/g, '_');
-    const collaboratorRef = ref(database, `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/colaboradores/${collaboratorKey}`);
-    await set(collaboratorRef, {
-      email: collaboratorEmail,
+  async addCollaborator(uid, discotecaId, eventoId, collaboratorEmail, permisos = {}, eventoMeta = {}) {
+    const normalizedEmail = sanitizeCollaboratorEmail(collaboratorEmail);
+    const collaboratorKey = collaboratorEmailToKey(normalizedEmail);
+    const timestamp = Date.now();
+    const collaboratorRef = ref(
+      database,
+      `users/${uid}/discotecas/${discotecaId}/eventos/${eventoId}/colaboradores/${collaboratorKey}`
+    );
+    const collaboratorEventIndexRef = ref(
+      database,
+      `collaboratorEvents/${collaboratorKey}/${uid}/${discotecaId}/${eventoId}`
+    );
+    const collaboratorData = {
+      email: normalizedEmail,
       permisos: {
         crearTickets: permisos.crearTickets !== undefined ? permisos.crearTickets : true,
         leerQR: permisos.leerQR !== undefined ? permisos.leerQR : true,
         verReportes: permisos.verReportes !== undefined ? permisos.verReportes : false
       },
-      addedAt: Date.now()
-    });
+      addedAt: timestamp
+    };
+
+    // 1) Alta principal del colaborador (ruta histórica y crítica).
+    await set(collaboratorRef, collaboratorData);
+
+    // 2) Índice para que el colaborador vea sus eventos sin leer la raíz.
+    // Si falla por reglas no actualizadas, no deshacemos el alta principal.
+    try {
+      await set(collaboratorEventIndexRef, {
+        ownerUid: uid,
+        discotecaId,
+        eventoId,
+        nombre: eventoMeta.nombre || "",
+        fecha: eventoMeta.fecha || "",
+        ubicacion: eventoMeta.ubicacion || "",
+        addedAt: timestamp
+      });
+      return { collaboratorSaved: true, indexSaved: true };
+    } catch (indexError) {
+      console.warn("No se pudo guardar collaboratorEvents:", indexError);
+      return { collaboratorSaved: true, indexSaved: false };
+    }
   },
 
   // Obtener eventos donde un usuario es colaborador
   async getEventsAsCollaborator(collaboratorEmail) {
-    const rootRef = ref(database);
-    const snapshot = await get(rootRef);
-    
+    const collaboratorKey = collaboratorEmailToKey(collaboratorEmail);
+    const indexRef = ref(database, `collaboratorEvents/${collaboratorKey}`);
+    const snapshot = await get(indexRef);
+
     if (!snapshot.exists()) return [];
 
-    const data = snapshot.val();
+    const indexData = snapshot.val();
     const events = [];
-    const collaboratorKey = collaboratorEmail.replace(/[@.]/g, '_');
 
-    if (data.users) {
-      for (const uid in data.users) {
-        if (data.users[uid].discotecas) {
-          for (const discotecaId in data.users[uid].discotecas) {
-            if (data.users[uid].discotecas[discotecaId].eventos) {
-              for (const eventoId in data.users[uid].discotecas[discotecaId].eventos) {
-                const evento = data.users[uid].discotecas[discotecaId].eventos[eventoId];
-                if (evento.colaboradores && evento.colaboradores[collaboratorKey]) {
-                  events.push({
-                    ...evento,
-                    ownerUid: uid,
-                    discotecaId
-                  });
-                }
-              }
-            }
-          }
+    for (const ownerUid in indexData) {
+      const ownerDiscotecas = indexData[ownerUid] || {};
+      for (const discotecaId in ownerDiscotecas) {
+        const discotecaEventos = ownerDiscotecas[discotecaId] || {};
+        for (const eventoId in discotecaEventos) {
+          const indexedEvent = discotecaEventos[eventoId] || {};
+          events.push({
+            id: indexedEvent.eventoId || eventoId,
+            ownerUid: indexedEvent.ownerUid || ownerUid,
+            discotecaId: indexedEvent.discotecaId || discotecaId,
+            nombre: indexedEvent.nombre || "Evento",
+            fecha: indexedEvent.fecha || "",
+            ubicacion: indexedEvent.ubicacion || ""
+          });
         }
       }
     }

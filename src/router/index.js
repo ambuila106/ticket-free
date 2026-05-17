@@ -51,7 +51,7 @@ const routes = [
     meta: { requiresAuth: true, requiresRole: 'colaborador' }
   },
   {
-    path: '/qr-scanner/:discotecaId/:eventoId',
+    path: '/qr-scanner/:ownerUid/:discotecaId/:eventoId',
     name: 'QRScanner',
     component: () => import('../views/QRScannerView.vue'),
     meta: { requiresAuth: true }
@@ -65,7 +65,7 @@ const router = createRouter({
 
 // Guard de navegación
 router.beforeEach(async (to, from, next) => {
-  const user = authService.getCurrentUser();
+  const user = await authService.waitForAuthReady();
   const userRole = localStorage.getItem('userRole');
 
   // Verificar autenticación
