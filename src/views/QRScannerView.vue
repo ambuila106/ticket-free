@@ -41,43 +41,55 @@
         </div>
       </div>
 
-      <div v-if="scannedTicket" class="ticket-result">
-        <h2>Ticket Encontrado</h2>
-        <div class="ticket-info">
-          <p><strong>Cliente:</strong> {{ scannedTicket.ticket.nombreCliente }}</p>
-          <p><strong>Teléfono:</strong> {{ scannedTicket.ticket.telefono }}</p>
-          <p><strong>Manillas / Boletas:</strong> {{ scannedTicket.ticket.cantidadBoletas ?? 1 }}</p>
-          <p v-if="boletaIndex > 0"><strong>QR escaneado:</strong> entrada {{ boletaIndex }} de {{ totalBoletas }}</p>
-          <p v-if="scannedTicket.ticket.tipoEntrada"><strong>Tipo entrada:</strong> {{ scannedTicket.ticket.tipoEntrada }}</p>
-          <p v-if="scannedTicket.ticket.precio != null"><strong>Precio:</strong> {{ formatPrecio(scannedTicket.ticket.precio) }}</p>
-          <p><strong>Estado:</strong>
-            <span class="status-badge" :class="scannedTicket.ticket.estado">
-              {{ scannedTicket.ticket.estado }}
-            </span>
-          </p>
-          <p v-if="progresoEntrega" class="progress-line">{{ progresoEntrega }}</p>
-          <p class="ticket-code"><strong>Código:</strong> {{ scannedTicket.scannedCode?.substring(0, 24) }}…</p>
-        </div>
-        
-        <div v-if="scannedTicket.ticket.estado === 'pagado' && !codigoYaCanjeado" class="action-section">
-          <button @click="markAsDelivered" class="deliver-btn">
-            {{ totalBoletas > 1 ? '✅ Registrar esta entrada' : '✅ Marcar como Entregado' }}
-          </button>
-        </div>
+      <div v-if="scannedTicket" class="modal-overlay scanner-result-overlay" @click.self="closeResult">
+        <div class="ticket-result modal-ticket-result" role="dialog" aria-modal="true" aria-label="Resultado del escaneo QR">
+          <h2>Resultado del QR</h2>
+          <div class="ticket-info">
+            <p><strong>Cliente:</strong> {{ scannedTicket.ticket.nombreCliente }}</p>
+            <p><strong>Teléfono:</strong> {{ scannedTicket.ticket.telefono }}</p>
+            <p><strong>Manillas / Boletas:</strong> {{ scannedTicket.ticket.cantidadBoletas ?? 1 }}</p>
+            <p v-if="boletaIndex > 0"><strong>QR escaneado:</strong> entrada {{ boletaIndex }} de {{ totalBoletas }}</p>
+            <p v-if="scannedTicket.ticket.tipoEntrada"><strong>Tipo entrada:</strong> {{ scannedTicket.ticket.tipoEntrada }}</p>
+            <p v-if="scannedTicket.ticket.precio != null"><strong>Precio:</strong> {{ formatPrecio(scannedTicket.ticket.precio) }}</p>
+            <p>
+              <strong>Estado:</strong>
+              <span class="status-badge" :class="scannedTicket.ticket.estado">
+                {{ scannedTicket.ticket.estado }}
+              </span>
+            </p>
+            <p>
+              <strong>¿Ya fue entregada?</strong>
+              <span class="delivery-answer" :class="{ yes: yaFueEntregada, no: !yaFueEntregada }">
+                {{ yaFueEntregada ? 'Sí' : 'No' }}
+              </span>
+            </p>
+            <p v-if="progresoEntrega" class="progress-line">{{ progresoEntrega }}</p>
+            <p class="ticket-code"><strong>Código:</strong> {{ scannedTicket.scannedCode?.substring(0, 24) }}…</p>
+          </div>
 
-        <div v-else-if="scannedTicket.ticket.estado === 'pagado' && codigoYaCanjeado" class="info-message">
-          <p>Esta boleta ya fue registrada como entregada.</p>
-        </div>
-        
-        <div v-else-if="scannedTicket.ticket.estado === 'entregado'" class="info-message">
-          <p>Todas las entradas de esta compra ya fueron entregadas.</p>
-        </div>
-        
-        <div v-else class="info-message">
-          <p>Este ticket está cancelado</p>
-        </div>
+          <div v-if="scannedTicket.ticket.estado === 'pagado' && !codigoYaCanjeado" class="action-section">
+            <button @click="markAsDelivered" class="deliver-btn">
+              {{ totalBoletas > 1 ? '✅ Registrar esta entrada' : '✅ Marcar como Entregado' }}
+            </button>
+          </div>
 
-        <button @click="clearResult" class="clear-btn">Escanear Otro</button>
+          <div v-else-if="scannedTicket.ticket.estado === 'pagado' && codigoYaCanjeado" class="info-message">
+            <p>Esta boleta ya fue registrada como entregada.</p>
+          </div>
+
+          <div v-else-if="scannedTicket.ticket.estado === 'entregado'" class="info-message">
+            <p>Todas las entradas de esta compra ya fueron entregadas.</p>
+          </div>
+
+          <div v-else class="info-message">
+            <p>Este ticket está cancelado.</p>
+          </div>
+
+          <div class="result-actions">
+            <button @click="clearResult" class="clear-btn">Escanear otro</button>
+            <button type="button" @click="closeResult" class="close-modal-btn">Cerrar</button>
+          </div>
+        </div>
       </div>
 
       <div v-if="loadingFile" class="loading-file-message">
@@ -142,6 +154,12 @@ const codigoYaCanjeado = computed(() => {
   const ec = st.ticket.entradasCanjeadas;
   if (!ec || typeof ec !== 'object') return false;
   return Boolean(ec[st.scannedCode]);
+});
+
+const yaFueEntregada = computed(() => {
+  const ticket = scannedTicket.value?.ticket;
+  if (!ticket) return false;
+  return ticket.estado === 'entregado' || codigoYaCanjeado.value;
 });
 
 const progresoEntrega = computed(() => {
@@ -330,6 +348,13 @@ const markAsDelivered = async () => {
     );
 
     if (res.yaUsado) {
+      scannedTicket.value.ticket.entradasCanjeadas = {
+        ...(scannedTicket.value.ticket.entradasCanjeadas || {}),
+        [code]: scannedTicket.value.ticket.entradasCanjeadas?.[code] || Date.now(),
+      };
+      if ((res.entregadas || 0) >= (res.total || 1)) {
+        scannedTicket.value.ticket.estado = 'entregado';
+      }
       alert('Esta boleta ya había sido registrada.');
       return;
     }
@@ -380,10 +405,15 @@ const markAsDelivered = async () => {
   }
 };
 
-const clearResult = () => {
+const clearResult = async () => {
   scannedTicket.value = null;
   error.value = '';
-  startScanner();
+  await startScanner();
+};
+
+const closeResult = () => {
+  scannedTicket.value = null;
+  error.value = '';
 };
 
 const goBack = async () => {
@@ -559,11 +589,35 @@ const goBack = async () => {
   word-break: break-all;
 }
 
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1200;
+}
+
+.scanner-result-overlay {
+  padding: 16px;
+}
+
 .ticket-result {
   background: white;
   padding: 30px;
   border-radius: 12px;
   margin-top: 20px;
+}
+
+.modal-ticket-result {
+  margin-top: 0;
+  width: min(96vw, 580px);
+  max-height: 90vh;
+  overflow-y: auto;
 }
 
 .ticket-result h2 {
@@ -600,6 +654,18 @@ const goBack = async () => {
   color: #721c24;
 }
 
+.delivery-answer {
+  font-weight: 700;
+}
+
+.delivery-answer.yes {
+  color: #1b6e32;
+}
+
+.delivery-answer.no {
+  color: #9a6700;
+}
+
 .action-section {
   margin: 20px 0;
 }
@@ -630,6 +696,23 @@ const goBack = async () => {
 .clear-btn {
   background: #667eea;
   color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.close-modal-btn {
+  background: #f5f5f5;
+  color: #444;
   border: none;
   padding: 10px 20px;
   border-radius: 6px;
@@ -704,6 +787,11 @@ const goBack = async () => {
     padding: 20px;
   }
 
+  .modal-ticket-result {
+    width: 95%;
+    max-height: 95vh;
+  }
+
   .ticket-result h2 {
     font-size: 1.3rem;
   }
@@ -721,6 +809,15 @@ const goBack = async () => {
     width: 100%;
     padding: 12px;
   }
+
+  .close-modal-btn {
+    width: 100%;
+    padding: 12px;
+  }
+
+  .result-actions {
+    flex-direction: column;
+  }
 }
 
 @media (max-width: 480px) {
@@ -734,6 +831,12 @@ const goBack = async () => {
 
   .ticket-result {
     padding: 15px;
+  }
+}
+
+@media (min-width: 601px) and (max-width: 1264px) {
+  .modal-ticket-result {
+    width: min(90vw, 620px);
   }
 }
 </style>

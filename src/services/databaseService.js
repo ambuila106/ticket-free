@@ -199,6 +199,86 @@ export const databaseService = {
     return snapshot.exists() ? snapshot.val() : null;
   },
 
+  // Eliminar evento completo (tickets, colaboradores y bitácora incluidos)
+  async deleteEvento(uid, discotecaId, eventoId, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const eventoRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}/eventos/${eventoId}`);
+    const eventoSnapshot = await get(eventoRef);
+
+    if (!eventoSnapshot.exists()) {
+      return { removed: false, reason: "not-found" };
+    }
+
+    const evento = eventoSnapshot.val() || {};
+    const colaboradores =
+      evento.colaboradores && typeof evento.colaboradores === "object"
+        ? Object.keys(evento.colaboradores)
+        : [];
+
+    const cleanupOps = [
+      remove(ref(database, `publicEvents/${ownerKey}/${discotecaId}/${eventoId}`)),
+    ];
+
+    for (const collaboratorKey of colaboradores) {
+      cleanupOps.push(
+        remove(ref(database, `collaboratorEvents/${collaboratorKey}/${ownerKey}/${discotecaId}/${eventoId}`))
+      );
+    }
+
+    await Promise.allSettled(cleanupOps);
+    await remove(eventoRef);
+
+    return {
+      removed: true,
+      cleanedCollaborators: colaboradores.length,
+    };
+  },
+
+  // Eliminar discoteca completa y limpiar índices relacionados.
+  async deleteDiscoteca(uid, discotecaId, userEmail = "") {
+    const ownerKey = await resolveUserDataKeyInternal(uid, userEmail);
+    const discotecaRef = ref(database, `users/${ownerKey}/discotecas/${discotecaId}`);
+    const discotecaSnapshot = await get(discotecaRef);
+
+    if (!discotecaSnapshot.exists()) {
+      return { removed: false, reason: "not-found" };
+    }
+
+    const discotecaData = discotecaSnapshot.val() || {};
+    const eventos =
+      discotecaData.eventos && typeof discotecaData.eventos === "object"
+        ? discotecaData.eventos
+        : {};
+
+    const collaboratorCleanupPaths = new Set();
+    for (const [eventoId, evento] of Object.entries(eventos)) {
+      const colaboradores =
+        evento?.colaboradores && typeof evento.colaboradores === "object"
+          ? Object.keys(evento.colaboradores)
+          : [];
+
+      for (const collaboratorKey of colaboradores) {
+        collaboratorCleanupPaths.add(
+          `collaboratorEvents/${collaboratorKey}/${ownerKey}/${discotecaId}/${eventoId}`
+        );
+      }
+    }
+
+    const cleanupOps = [remove(ref(database, `publicEvents/${ownerKey}/${discotecaId}`))];
+    collaboratorCleanupPaths.forEach((path) => {
+      cleanupOps.push(remove(ref(database, path)));
+    });
+
+    await Promise.allSettled(cleanupOps);
+    await remove(discotecaRef);
+
+    return {
+      removed: true,
+      cleanedEvents: Object.keys(eventos).length,
+      cleanedCollaboratorIndexes: collaboratorCleanupPaths.size,
+    };
+  },
+
   // ========== TICKETS ==========
 
   // Crear ticket (venta) — un código QR por boleta

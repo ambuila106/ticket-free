@@ -1,7 +1,17 @@
 <template>
   <div class="discoteca-view">
     <header class="header">
-      <button @click="$router.push('/dashboard')" class="back-btn">← Volver</button>
+      <div class="header-top">
+        <button @click="$router.push('/dashboard')" class="back-btn">← Volver</button>
+        <button
+          v-if="discoteca"
+          type="button"
+          class="delete-discoteca-btn"
+          @click="requestDeleteDiscoteca"
+        >
+          🗑 Eliminar discoteca
+        </button>
+      </div>
       <h1>{{ discoteca?.nombre || 'Cargando...' }}</h1>
     </header>
 
@@ -27,6 +37,15 @@
           <p class="evento-fecha">📅 {{ evento.fecha }}</p>
           <p class="evento-ubicacion">📍 {{ evento.ubicacion || discoteca?.ubicacion }}</p>
           <p class="evento-desc">{{ evento.descripcion || 'Sin descripción' }}</p>
+          <div class="evento-card-actions">
+            <button
+              type="button"
+              class="delete-event-btn"
+              @click.stop="requestDeleteEvento(evento)"
+            >
+              Eliminar evento
+            </button>
+          </div>
         </div>
       </div>
     </main>
@@ -59,6 +78,42 @@
         </form>
       </div>
     </div>
+
+    <!-- Modal confirmar eliminación -->
+    <div v-if="showDeleteModal" class="modal-overlay" @click="closeDeleteModal">
+      <div class="modal" @click.stop>
+        <h2>{{ deletingTarget?.type === 'discoteca' ? 'Eliminar Discoteca' : 'Eliminar Evento' }}</h2>
+        <p class="delete-warning">
+          Vas a eliminar
+          <strong>{{ deletingTarget?.nombre || 'este elemento' }}</strong>.
+          Esta acción borra datos relacionados y no se puede deshacer.
+        </p>
+        <div class="form-group">
+          <label>Escribe <strong>{{ deleteKeyword }}</strong> para confirmar</label>
+          <input
+            v-model="deleteConfirmationText"
+            type="text"
+            class="confirm-input"
+            :placeholder="`Escribe ${deleteKeyword}`"
+            autocomplete="off"
+          />
+          <small class="delete-hint">
+            Confirmación de seguridad activa para evitar eliminaciones accidentales.
+          </small>
+        </div>
+        <div class="form-actions">
+          <button type="button" @click="closeDeleteModal" class="cancel-btn">Cancelar</button>
+          <button
+            type="button"
+            class="danger-btn"
+            :disabled="!canConfirmDelete || deleting"
+            @click="confirmDelete"
+          >
+            {{ deleting ? 'Eliminando...' : 'Eliminar definitivamente' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -76,6 +131,11 @@ const discoteca = ref(null);
 const eventos = ref({});
 const loading = ref(true);
 const showCreateModal = ref(false);
+const showDeleteModal = ref(false);
+const deleting = ref(false);
+const deleteKeyword = 'ELIMINAR';
+const deleteConfirmationText = ref('');
+const deletingTarget = ref(null);
 const newEvento = ref({
   nombre: '',
   fecha: '',
@@ -108,6 +168,10 @@ const eventosOrdenados = computed(() => {
       );
     });
 });
+
+const canConfirmDelete = computed(
+  () => deleteConfirmationText.value.trim().toUpperCase() === deleteKeyword
+);
 
 let unsubscribe = null;
 
@@ -184,6 +248,68 @@ const createEvento = async () => {
   }
 };
 
+const requestDeleteEvento = (evento) => {
+  deletingTarget.value = {
+    type: 'evento',
+    id: evento.id,
+    nombre: evento.nombre || 'Evento sin nombre'
+  };
+  deleteConfirmationText.value = '';
+  showDeleteModal.value = true;
+};
+
+const requestDeleteDiscoteca = () => {
+  if (!discoteca.value) return;
+  deletingTarget.value = {
+    type: 'discoteca',
+    id: discotecaId,
+    nombre: discoteca.value.nombre || 'Discoteca sin nombre'
+  };
+  deleteConfirmationText.value = '';
+  showDeleteModal.value = true;
+};
+
+const closeDeleteModal = () => {
+  if (deleting.value) return;
+  showDeleteModal.value = false;
+  deletingTarget.value = null;
+  deleteConfirmationText.value = '';
+};
+
+const confirmDelete = async () => {
+  if (!user.value || !deletingTarget.value) return;
+  if (!canConfirmDelete.value) return;
+
+  deleting.value = true;
+  try {
+    if (deletingTarget.value.type === 'evento') {
+      await databaseService.deleteEvento(
+        user.value.uid,
+        discotecaId,
+        deletingTarget.value.id,
+        user.value.email
+      );
+      alert('Evento eliminado correctamente.');
+      showDeleteModal.value = false;
+      deletingTarget.value = null;
+      deleteConfirmationText.value = '';
+      return;
+    }
+
+    await databaseService.deleteDiscoteca(user.value.uid, discotecaId, user.value.email);
+    alert('Discoteca eliminada correctamente.');
+    showDeleteModal.value = false;
+    deletingTarget.value = null;
+    deleteConfirmationText.value = '';
+    router.push('/dashboard');
+  } catch (error) {
+    console.error('Error eliminando recurso:', error);
+    alert('No se pudo completar la eliminación');
+  } finally {
+    deleting.value = false;
+  }
+};
+
 const goToEvento = (eventoId) => {
   router.push(`/evento/${discotecaId}/${eventoId}`);
 };
@@ -202,6 +328,13 @@ const goToEvento = (eventoId) => {
   margin-bottom: 30px;
 }
 
+.header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
 .back-btn {
   background: none;
   border: none;
@@ -214,6 +347,22 @@ const goToEvento = (eventoId) => {
 
 .back-btn:hover {
   text-decoration: underline;
+}
+
+.delete-discoteca-btn {
+  border: 1px solid #dc3545;
+  background: white;
+  color: #dc3545;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.delete-discoteca-btn:hover {
+  background: #dc3545;
+  color: white;
 }
 
 .header h1 {
@@ -288,6 +437,28 @@ const goToEvento = (eventoId) => {
   margin-top: 10px;
 }
 
+.evento-card-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.delete-event-btn {
+  border: 1px solid #dc3545;
+  background: white;
+  color: #dc3545;
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.delete-event-btn:hover {
+  background: #dc3545;
+  color: white;
+}
+
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -342,6 +513,22 @@ const goToEvento = (eventoId) => {
   min-height: 80px;
 }
 
+.delete-warning {
+  color: #444;
+  line-height: 1.45;
+}
+
+.confirm-input {
+  text-transform: uppercase;
+}
+
+.delete-hint {
+  display: block;
+  margin-top: 8px;
+  color: #777;
+  font-size: 12px;
+}
+
 .form-actions {
   display: flex;
   gap: 10px;
@@ -376,6 +563,20 @@ const goToEvento = (eventoId) => {
   background: #5568d3;
 }
 
+.danger-btn {
+  background: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 18px;
+  cursor: pointer;
+}
+
+.danger-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 /* Responsive Mobile */
 @media (max-width: 768px) {
   .header {
@@ -385,6 +586,16 @@ const goToEvento = (eventoId) => {
 
   .header h1 {
     font-size: 1.5rem;
+  }
+
+  .header-top {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .delete-discoteca-btn {
+    width: 100%;
   }
 
   .main-content {
@@ -411,6 +622,15 @@ const goToEvento = (eventoId) => {
     font-size: 1.3rem;
   }
 
+  .evento-card-actions {
+    justify-content: stretch;
+  }
+
+  .delete-event-btn {
+    width: 100%;
+    padding: 10px 12px;
+  }
+
   .modal {
     padding: 20px;
     width: 95%;
@@ -428,7 +648,8 @@ const goToEvento = (eventoId) => {
   }
 
   .cancel-btn,
-  .submit-btn {
+  .submit-btn,
+  .danger-btn {
     width: 100%;
     padding: 12px;
   }
@@ -441,6 +662,12 @@ const goToEvento = (eventoId) => {
 
   .evento-card {
     padding: 16px;
+  }
+}
+
+@media (min-width: 601px) and (max-width: 1264px) {
+  .evento-card-actions {
+    justify-content: flex-start;
   }
 }
 </style>
