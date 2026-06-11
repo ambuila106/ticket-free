@@ -18,6 +18,13 @@
         >
           📋 Bitácora
         </button>
+        <button
+          v-if="isOrganizador"
+          @click="openComprobantes"
+          class="comprobantes-btn"
+        >
+          🧾 Comprobantes
+        </button>
         <button @click="goToScanner" class="scanner-btn">📷 Leer QR</button>
       </div>
     </header>
@@ -29,9 +36,9 @@
       </div>
 
       <div v-if="isOrganizador" class="public-sales-card">
-        <h3>🌐 Venta pública (Wompi)</h3>
+        <h3>🌐 Venta pública (transferencia Nequi / BRE-B)</h3>
         <p class="public-sales-hint">
-          Comparte solo el enlace de abajo. Los compradores no ven el panel de administración.
+          Comparte solo el enlace de abajo. Los compradores transfieren al número que configures, suben el comprobante y sus QR quedan <strong>sin validar</strong> hasta que verifiques el pago en “Pedidos por validar”.
         </p>
         <label class="toggle-row">
           <input type="checkbox" v-model="publicPageForm.enabled" />
@@ -47,6 +54,28 @@
             <input v-model="publicPageForm.tipoEntrada" type="text" placeholder="Ej: General" />
           </label>
         </div>
+        <div class="public-form-grid">
+          <label>
+            Método de pago
+            <select v-model="publicPageForm.pagoMetodo">
+              <option value="nequi">Nequi</option>
+              <option value="bre-b">BRE-B</option>
+              <option value="otro">Otra transferencia</option>
+            </select>
+          </label>
+          <label>
+            Número / llave para recibir
+            <input v-model="publicPageForm.pagoNumero" type="text" placeholder="Ej: 300 123 4567" />
+          </label>
+          <label>
+            Titular de la cuenta
+            <input v-model="publicPageForm.pagoTitular" type="text" placeholder="Nombre de quien recibe" />
+          </label>
+          <label class="full-width">
+            Instrucciones para el comprador (opcional)
+            <input v-model="publicPageForm.pagoInstrucciones" type="text" placeholder="Ej: Envía el comprobante con tu nombre" />
+          </label>
+        </div>
         <div class="public-actions">
           <button type="button" class="save-public-btn" @click="savePublicPage" :disabled="savingPublicPage">
             {{ savingPublicPage ? 'Guardando…' : 'Guardar página pública' }}
@@ -57,6 +86,47 @@
         </div>
         <p v-if="publicCopyMsg" class="copy-msg">{{ publicCopyMsg }}</p>
         <code class="public-url-preview">{{ publicPurchaseLink }}</code>
+      </div>
+
+      <div v-if="isOrganizador && pedidosPendientes.length" class="pedidos-card">
+        <h3>🕒 Pedidos por validar ({{ pedidosPendientes.length }})</h3>
+        <p class="pedidos-hint">
+          Revisa el comprobante de transferencia. Si el pago es real, pulsa <strong>Verificar</strong> para que las entradas pasen a <strong>pagadas</strong> y puedan leerse en la puerta.
+        </p>
+        <div class="pedidos-list">
+          <div v-for="p in pedidosPendientes" :key="p.id" class="pedido-item">
+            <div class="pedido-comprobante" @click="p.comprobanteUrl && viewComprobante(p.comprobanteUrl)">
+              <img v-if="p.comprobanteUrl" :src="p.comprobanteUrl" alt="Comprobante" />
+              <div v-else class="no-comprobante">Sin comprobante</div>
+            </div>
+            <div class="pedido-info">
+              <p><strong>{{ p.nombreCliente || 'Sin nombre' }}</strong></p>
+              <p v-if="p.cedula" class="pedido-line">CC: {{ p.cedula }}</p>
+              <p v-if="p.telefono" class="pedido-line">Tel: {{ p.telefono }}</p>
+              <p v-if="p.emailCliente" class="pedido-line">{{ p.emailCliente }}</p>
+              <p class="pedido-line">Entradas: <strong>{{ p.cantidadBoletas || 1 }}</strong> · {{ p.precio || '—' }}</p>
+              <p v-if="p.esColaborador" class="pedido-badge">Vendido por colaborador</p>
+            </div>
+            <div class="pedido-actions">
+              <button
+                type="button"
+                class="verify-btn"
+                :disabled="verifyingTicketId === p.id"
+                @click="verifyOrder(p.id)"
+              >
+                {{ verifyingTicketId === p.id ? '…' : '✓ Verificar' }}
+              </button>
+              <button
+                type="button"
+                class="reject-btn"
+                :disabled="verifyingTicketId === p.id"
+                @click="rejectOrder(p.id)"
+              >
+                ✕ Rechazar
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="tickets-section">
@@ -74,6 +144,10 @@
           <div class="stat-card clickable" @click="showTicketsList = true">
             <span class="stat-label">Total QR</span>
             <span class="stat-value">{{ totalQrs }}</span>
+          </div>
+          <div class="stat-card sin_validar">
+            <span class="stat-label">QR por validar</span>
+            <span class="stat-value">{{ ticketsByStatus.sin_validar }}</span>
           </div>
           <div class="stat-card pagado">
             <span class="stat-label">QR pagados</span>
@@ -108,6 +182,7 @@
             </div>
             <div class="ticket-body">
               <p><strong>Cliente:</strong> {{ ticket.nombreCliente }}</p>
+              <p v-if="ticket.cedula"><strong>Cédula:</strong> {{ ticket.cedula }}</p>
               <p><strong>Teléfono:</strong> {{ ticket.telefono }}</p>
               <p v-if="ticket.emailCliente"><strong>Correo:</strong> {{ ticket.emailCliente }}</p>
               <p><strong>Tipo:</strong> {{ ticket.tipoEntrada }}</p>
@@ -116,6 +191,32 @@
             </div>
             <div class="ticket-actions">
               <button @click="viewTicket(ticket, id)" class="view-btn">Ver QR</button>
+              <button
+                v-if="ticket.comprobanteUrl"
+                type="button"
+                class="comprobante-link-btn"
+                @click="viewComprobante(ticket.comprobanteUrl)"
+              >
+                Ver comprobante
+              </button>
+              <template v-if="ticket.estado === 'sin_validar' && isOrganizador">
+                <button
+                  type="button"
+                  class="verify-btn"
+                  :disabled="verifyingTicketId === id"
+                  @click="verifyOrder(id)"
+                >
+                  ✓ Verificar
+                </button>
+                <button
+                  type="button"
+                  class="reject-btn"
+                  :disabled="verifyingTicketId === id"
+                  @click="rejectOrder(id)"
+                >
+                  ✕ Rechazar
+                </button>
+              </template>
               <button
                 v-if="ticket.emailCliente"
                 type="button"
@@ -366,6 +467,68 @@
         </div>
       </div>
     </div>
+
+    <div v-if="showComprobantesModal" class="modal-overlay" @click="showComprobantesModal = false">
+      <div class="modal comprobantes-modal" @click.stop>
+        <div class="modal-header">
+          <h2>🧾 Comprobantes del evento</h2>
+          <button @click="showComprobantesModal = false" class="close-x">×</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="loadingComprobantes" class="loading">Cargando comprobantes…</div>
+          <div v-else-if="comprobantesEvento.length === 0" class="empty-state">
+            <p>No hay comprobantes para este evento todavía.</p>
+          </div>
+          <template v-else>
+            <p class="comprobantes-count">
+              {{ comprobantesEvento.length }} comprobante(s). Bórralos para liberar espacio en Firebase.
+            </p>
+            <div class="comprobantes-grid">
+              <div v-for="c in comprobantesPaginados" :key="c.ticketId" class="comprobante-cell">
+                <img :src="c.url" alt="Comprobante" @click="viewComprobante(c.url)" />
+                <div class="comprobante-meta">
+                  <span>{{ c.cliente || 'Sin nombre' }}</span>
+                  <span v-if="c.nombreEvento" class="comprobante-sub">{{ c.nombreEvento }}</span>
+                  <span v-if="c.monto" class="comprobante-sub">$ {{ Number(c.monto).toLocaleString('es-CO') }}</span>
+                </div>
+                <button
+                  type="button"
+                  class="delete-comprobante-btn"
+                  :disabled="deletingComprobanteId === c.ticketId"
+                  @click="deleteComprobante(c)"
+                >
+                  {{ deletingComprobanteId === c.ticketId ? 'Borrando…' : '🗑 Borrar' }}
+                </button>
+              </div>
+            </div>
+            <div v-if="totalComprobantesPages > 1" class="comprobantes-pager">
+              <button type="button" :disabled="comprobantesPage === 0" @click="comprobantesPage--">‹ Anterior</button>
+              <span>Página {{ comprobantesPage + 1 }} de {{ totalComprobantesPages }}</span>
+              <button type="button" :disabled="comprobantesPage >= totalComprobantesPages - 1" @click="comprobantesPage++">Siguiente ›</button>
+            </div>
+          </template>
+        </div>
+        <div class="modal-footer">
+          <button @click="showComprobantesModal = false" class="close-btn">Cerrar</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showComprobanteView" class="modal-overlay" @click="showComprobanteView = false">
+      <div class="modal comprobante-view-modal" @click.stop>
+        <div class="modal-header">
+          <h2>Comprobante de transferencia</h2>
+          <button @click="showComprobanteView = false" class="close-x">×</button>
+        </div>
+        <div class="modal-body comprobante-view-body">
+          <img :src="comprobanteViewUrl" alt="Comprobante" />
+        </div>
+        <div class="modal-footer">
+          <a :href="comprobanteViewUrl" target="_blank" rel="noopener" class="open-original-btn">Abrir original</a>
+          <button @click="showComprobanteView = false" class="close-btn">Cerrar</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -376,7 +539,8 @@ import { authService } from '../services/authService';
 import { databaseService } from '../services/databaseService';
 import { permissionService } from '../services/permissionService';
 import { bitacoraService } from '../services/bitacoraService';
-import { getResendTicketQrEmailUrl } from '../services/wompiService';
+import { storageService } from '../services/storageService';
+import { getResendTicketQrEmailUrl } from '../services/apiService';
 import { generateQRCode, generateTicketImage } from '../utils/qrGenerator';
 import { getTicketSecureCodes, formatCodesPreview } from '../utils/ticketCodes';
 import { validators, sanitizeInput } from '../utils/validation';
@@ -414,11 +578,24 @@ const discoteca = ref(null);
 const publicPageForm = ref({
   enabled: false,
   precioPorEntradaCOP: 50000,
-  tipoEntrada: 'General'
+  tipoEntrada: 'General',
+  pagoMetodo: 'nequi',
+  pagoNumero: '',
+  pagoTitular: '',
+  pagoInstrucciones: ''
 });
 const savingPublicPage = ref(false);
 const publicCopyMsg = ref('');
 const resendingTicketId = ref(null);
+const showComprobantesModal = ref(false);
+const comprobantes = ref([]);
+const loadingComprobantes = ref(false);
+const comprobantesPage = ref(0);
+const comprobantesPageSize = 10;
+const deletingComprobanteId = ref(null);
+const verifyingTicketId = ref(null);
+const showComprobanteView = ref(false);
+const comprobanteViewUrl = ref('');
 
 const newTicket = ref({
   nombreCliente: '',
@@ -473,15 +650,36 @@ const getDeliveredQrCount = (ticket) => {
 };
 
 const ticketsByStatus = computed(() => {
-  const stats = { pagado: 0, entregado: 0, cancelado: 0 };
+  const stats = { sin_validar: 0, pagado: 0, entregado: 0, cancelado: 0 };
   Object.values(tickets.value).forEach(ticket => {
     const qrCount = getTicketQrCount(ticket);
+    if (ticket.estado === 'sin_validar') stats.sin_validar += qrCount;
     if (ticket.estado === 'pagado') stats.pagado += qrCount;
     if (ticket.estado === 'cancelado') stats.cancelado += qrCount;
     stats.entregado += getDeliveredQrCount(ticket);
   });
   return stats;
 });
+
+const pedidosPendientes = computed(() => {
+  return Object.entries(tickets.value)
+    .map(([id, ticket]) => ({ id, ...ticket }))
+    .filter((t) => t.estado === 'sin_validar')
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+});
+
+const comprobantesEvento = computed(() => {
+  return comprobantes.value.filter((c) => c.eventoId === eventoId);
+});
+
+const comprobantesPaginados = computed(() => {
+  const start = comprobantesPage.value * comprobantesPageSize;
+  return comprobantesEvento.value.slice(start, start + comprobantesPageSize);
+});
+
+const totalComprobantesPages = computed(() =>
+  Math.max(1, Math.ceil(comprobantesEvento.value.length / comprobantesPageSize))
+);
 
 const filteredTickets = computed(() => {
   if (!searchQuery.value) {
@@ -584,9 +782,15 @@ onMounted(async () => {
         publicPageForm.value = {
           enabled: !!pub.enabled,
           precioPorEntradaCOP: Number(pub.precioPorEntradaCOP) || 50000,
-          tipoEntrada: pub.tipoEntrada || 'General'
+          tipoEntrada: pub.tipoEntrada || 'General',
+          pagoMetodo: pub.pago?.metodo || 'nequi',
+          pagoNumero: pub.pago?.numero || '',
+          pagoTitular: pub.pago?.titular || '',
+          pagoInstrucciones: pub.pago?.instrucciones || ''
         };
       }
+      // Backfill del catálogo de eventos (para landing/admin).
+      syncEventIndex().catch(() => {});
     }
 
     // Carga inicial para evitar spinner infinito si la suscripción tarda/falla.
@@ -1065,8 +1269,28 @@ const exportData = async () => {
   document.body.removeChild(link);
 };
 
+const syncEventIndex = async () => {
+  if (!ownerUid.value || !evento.value) return;
+  await databaseService.upsertEventIndex(ownerUid.value, discotecaId, eventoId, {
+    nombre: evento.value.nombre || 'Evento',
+    fecha: evento.value.fecha || '',
+    fechaTimestamp: Date.parse(String(evento.value.fecha || '')) || evento.value.createdAt || Date.now(),
+    ubicacion: evento.value.ubicacion || discoteca.value?.ubicacion || '',
+    descripcion: evento.value.descripcion || '',
+    nombreDiscoteca: discoteca.value?.nombre || '',
+    ownerEmail: user.value?.email || '',
+    precioPorEntradaCOP: Math.max(0, Number(publicPageForm.value.precioPorEntradaCOP) || 0),
+    publicEnabled: !!publicPageForm.value.enabled,
+    createdAt: evento.value.createdAt || Date.now()
+  });
+};
+
 const savePublicPage = async () => {
   if (!ownerUid.value || !evento.value) return;
+  if (publicPageForm.value.enabled && !publicPageForm.value.pagoNumero.trim()) {
+    alert('Para activar la venta debes ingresar el número de Nequi / BRE-B para recibir las transferencias.');
+    return;
+  }
   savingPublicPage.value = true;
   publicCopyMsg.value = '';
   try {
@@ -1078,14 +1302,97 @@ const savePublicPage = async () => {
       descripcion: evento.value.descripcion || '',
       nombreDiscoteca: discoteca.value?.nombre || '',
       precioPorEntradaCOP: Math.max(100, Number(publicPageForm.value.precioPorEntradaCOP) || 0),
-      tipoEntrada: (publicPageForm.value.tipoEntrada || 'General').trim().substring(0, 80)
+      tipoEntrada: (publicPageForm.value.tipoEntrada || 'General').trim().substring(0, 80),
+      pago: {
+        metodo: publicPageForm.value.pagoMetodo || 'nequi',
+        numero: publicPageForm.value.pagoNumero.trim().substring(0, 60),
+        titular: publicPageForm.value.pagoTitular.trim().substring(0, 120),
+        instrucciones: publicPageForm.value.pagoInstrucciones.trim().substring(0, 300)
+      }
     });
+    await syncEventIndex();
     alert('Página pública guardada. Copia el enlace para compartirlo.');
   } catch (e) {
     alert('Error al guardar: ' + (e.message || 'desconocido'));
   } finally {
     savingPublicPage.value = false;
   }
+};
+
+const verifyOrder = async (ticketId) => {
+  if (!ownerUid.value || !isOrganizador.value) return;
+  verifyingTicketId.value = ticketId;
+  try {
+    const ticket = tickets.value[ticketId];
+    await databaseService.verifyOrder(ownerUid.value, discotecaId, eventoId, ticketId);
+    await bitacoraService.registrarAccion(ownerUid.value, discotecaId, eventoId, 'estado_cambiado', {
+      ticketId,
+      ticketCode: (getTicketSecureCodes(ticket)[0] || '').substring(0, 12),
+      cliente: ticket?.nombreCliente || '',
+      estadoAnterior: 'sin_validar',
+      estadoNuevo: 'pagado'
+    });
+  } catch (e) {
+    alert('No se pudo verificar: ' + (e.message || 'error'));
+  } finally {
+    verifyingTicketId.value = null;
+  }
+};
+
+const rejectOrder = async (ticketId) => {
+  if (!ownerUid.value || !isOrganizador.value) return;
+  if (!confirm('¿Rechazar este pedido? La transferencia no se considerará válida.')) return;
+  verifyingTicketId.value = ticketId;
+  try {
+    const ticket = tickets.value[ticketId];
+    await databaseService.rejectOrder(ownerUid.value, discotecaId, eventoId, ticketId);
+    await bitacoraService.registrarAccion(ownerUid.value, discotecaId, eventoId, 'ticket_cancelado', {
+      ticketId,
+      ticketCode: (getTicketSecureCodes(ticket)[0] || '').substring(0, 12),
+      cliente: ticket?.nombreCliente || '',
+      estadoAnterior: 'sin_validar',
+      estadoNuevo: 'cancelado'
+    });
+  } catch (e) {
+    alert('No se pudo rechazar: ' + (e.message || 'error'));
+  } finally {
+    verifyingTicketId.value = null;
+  }
+};
+
+const openComprobantes = async () => {
+  showComprobantesModal.value = true;
+  comprobantesPage.value = 0;
+  loadingComprobantes.value = true;
+  try {
+    comprobantes.value = await databaseService.getOwnerComprobantes(ownerUid.value);
+  } catch (e) {
+    console.error('Error cargando comprobantes:', e);
+  } finally {
+    loadingComprobantes.value = false;
+  }
+};
+
+const deleteComprobante = async (c) => {
+  if (!confirm('¿Borrar este comprobante? Se elimina de Firebase y no se puede deshacer.')) return;
+  deletingComprobanteId.value = c.ticketId;
+  try {
+    if (c.path) await storageService.deleteByPath(c.path);
+    await databaseService.removeComprobanteRecord(ownerUid.value, c.discotecaId || discotecaId, c.eventoId || eventoId, c.ticketId);
+    comprobantes.value = comprobantes.value.filter((x) => x.ticketId !== c.ticketId);
+    if (comprobantesPage.value >= totalComprobantesPages.value) {
+      comprobantesPage.value = Math.max(0, totalComprobantesPages.value - 1);
+    }
+  } catch (e) {
+    alert('No se pudo borrar: ' + (e.message || 'error'));
+  } finally {
+    deletingComprobanteId.value = null;
+  }
+};
+
+const viewComprobante = (url) => {
+  comprobanteViewUrl.value = url;
+  showComprobanteView.value = true;
 };
 
 const copyPublicLink = async () => {
@@ -1440,6 +1747,286 @@ const goBack = () => {
 .ticket-status.cancelado {
   background: #f8d7da;
   color: #721c24;
+}
+
+.stat-card.sin_validar {
+  background: #e7e0ff;
+}
+
+.ticket-card.sin_validar {
+  border-left-color: #7c5cff;
+  background: #f6f3ff;
+}
+
+.ticket-status.sin_validar {
+  background: #e7e0ff;
+  color: #5b3cc4;
+}
+
+.comprobantes-btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #fff;
+  color: #5b3cc4;
+  border: 1px solid #d6ccff;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.comprobantes-btn:hover {
+  background: #f1ecff;
+}
+
+.full-width {
+  grid-column: 1 / -1;
+}
+
+.public-form-grid select {
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 14px;
+  width: 100%;
+}
+
+/* Pedidos por validar */
+.pedidos-card {
+  background: #fff;
+  border: 1px solid #e4dcff;
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 24px;
+  box-shadow: 0 2px 8px rgba(124, 92, 255, 0.08);
+}
+
+.pedidos-card h3 {
+  margin: 0 0 6px;
+  color: #5b3cc4;
+}
+
+.pedidos-hint {
+  color: #666;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.pedidos-list {
+  display: grid;
+  gap: 14px;
+}
+
+.pedido-item {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  gap: 16px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid #efeaff;
+  border-radius: 10px;
+  background: #faf8ff;
+}
+
+.pedido-comprobante {
+  width: 90px;
+  height: 90px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #eee;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pedido-comprobante img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.no-comprobante {
+  font-size: 11px;
+  color: #999;
+  text-align: center;
+  padding: 4px;
+}
+
+.pedido-info p {
+  margin: 2px 0;
+  font-size: 14px;
+  color: #444;
+}
+
+.pedido-line {
+  color: #666;
+  font-size: 13px;
+}
+
+.pedido-badge {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 11px;
+  background: #fff3cd;
+  color: #856404;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.pedido-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.verify-btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: #28a745;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.verify-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.reject-btn {
+  padding: 8px 16px;
+  border: 1px solid #dc3545;
+  border-radius: 6px;
+  background: #fff;
+  color: #dc3545;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.comprobante-link-btn {
+  padding: 8px 16px;
+  border: 1px solid #7c5cff;
+  background: #fff;
+  color: #7c5cff;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+/* Modal comprobantes */
+.comprobantes-modal {
+  max-width: 760px;
+  width: 100%;
+}
+
+.comprobantes-count {
+  color: #666;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.comprobantes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 14px;
+}
+
+.comprobante-cell {
+  border: 1px solid #eee;
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.comprobante-cell img {
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+  cursor: pointer;
+  background: #f1f1f1;
+}
+
+.comprobante-meta {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  color: #444;
+}
+
+.comprobante-sub {
+  color: #888;
+  font-size: 11px;
+}
+
+.delete-comprobante-btn {
+  margin: 0 10px 10px;
+  padding: 6px;
+  border: 1px solid #dc3545;
+  background: #fff;
+  color: #dc3545;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.delete-comprobante-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.comprobantes-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 18px;
+  font-size: 14px;
+  color: #555;
+}
+
+.comprobantes-pager button {
+  padding: 8px 14px;
+  border: 1px solid #ddd;
+  background: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.comprobantes-pager button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.comprobante-view-modal {
+  max-width: 560px;
+  width: 100%;
+}
+
+.comprobante-view-body {
+  display: flex;
+  justify-content: center;
+}
+
+.comprobante-view-body img {
+  max-width: 100%;
+  max-height: 70vh;
+  border-radius: 8px;
+}
+
+.open-original-btn {
+  padding: 10px 18px;
+  background: #7c5cff;
+  color: #fff;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 14px;
 }
 
 .ticket-body p {

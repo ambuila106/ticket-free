@@ -1,14 +1,17 @@
 /**
- * Cloud Functions: Wompi (Colombia)
+ * Cloud Functions: Ticket Free / Festi
  *
- * Variables (producción: Google Cloud Console → Cloud Run → servicio de la función → Variables y secretos,
- * o archivo functions/.env en local / emulador):
- *   WOMPI_INTEGRITY_SECRET  — Secreto de integridad del widget
- *   WOMPI_PUBLIC_KEY        — pub_prod_... / pub_test_...
- *   WOMPI_EVENTS_SECRET     — prod_events_... (validación webhook; recomendado)
- *   PUBLIC_APP_URL          — https://tu-dominio.web.app (opcional si hay header Origin)
- *   RESEND_API_KEY          — API key de Resend (correo con QR; opcional)
- *   RESEND_FROM             — Remitente verificado, ej. "Ticket Free <onboarding@resend.dev>"
+ * Flujo de pago por transferencia manual (Nequi / BRE-B):
+ *   - submitTransferOrder: el comprador (autenticado) sube su comprobante y
+ *     crea un pedido (ticket) en estado "sin_validar".
+ *   - El dueño del evento verifica la transferencia y lo pasa a "pagado".
+ *   - requestQrTransfer / acceptQrTransfer: transferir QRs entre usuarios.
+ *   - syncTicketQrs (trigger RTDB): mantiene el índice userQrs para "Mis entradas".
+ *   - resendTicketQrEmail: reenvía el QR por correo (Resend, opcional).
+ *
+ * Variables (functions/.env en local; Cloud Run en producción):
+ *   RESEND_API_KEY  — API key de Resend (correo con QR; opcional)
+ *   RESEND_FROM     — Remitente verificado, ej. "Festi <entradas@tudominio.com>"
  */
 const path = require("path");
 try {
@@ -17,8 +20,8 @@ try {
   /* dotenv opcional */
 }
 
-const crypto = require("crypto");
 const { onRequest } = require("firebase-functions/v2/https");
+const { onValueWritten } = require("firebase-functions/v2/database");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const admin = require("firebase-admin");
 const QRCode = require("qrcode");
@@ -43,50 +46,41 @@ function generateSecureCode() {
   return `${timestamp}-${random}-${random2}`.toUpperCase();
 }
 
-function wompiWidgetIntegrity(reference, amountInCents, currency, secret) {
-  const payload = `${reference}${amountInCents}${currency}${secret}`;
-  return crypto.createHash("sha256").update(payload).digest("hex");
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
 }
 
-/** Lee ruta tipo "transaction.id" dentro de body.data */
-function getDataProperty(data, propertyPath) {
-  if (!data || !propertyPath) return null;
-  const parts = String(propertyPath).split(".");
-  let cur = data;
-  for (const p of parts) {
-    if (cur == null || typeof cur !== "object") return null;
-    cur = cur[p];
-  }
-  return cur;
+function emailToKey(email) {
+  return normalizeEmail(email).replace(/[.#$/[\]@]/g, "_");
 }
 
-/**
- * Validación oficial Wompi (docs Colombia → Eventos → Seguridad)
- * https://docs.wompi.co/docs/colombia/eventos/
- */
-function verifyWompiEventFromRequest(body, headerChecksum, eventsSecret) {
-  if (!eventsSecret) return { ok: true, skipped: true };
-  if (!body?.signature?.properties || body.timestamp == null) {
-    return { ok: false, reason: "missing_signature_fields" };
+/** Clave válida para usar un código QR como clave de nodo en RTDB. */
+function codeToKey(code) {
+  return String(code || "").replace(/[.#$/[\]]/g, "_");
+}
+
+/** Lista de códigos de un ticket (normaliza secureCodes objeto/array). */
+function getTicketSecureCodes(ticket) {
+  if (!ticket) return [];
+  let raw = ticket.secureCodes;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    raw = Object.keys(raw)
+      .filter((k) => /^\d+$/.test(k))
+      .sort((a, b) => Number(a) - Number(b))
+      .map((k) => raw[k]);
   }
-  let concat = "";
-  for (const prop of body.signature.properties) {
-    const val = getDataProperty(body.data, prop);
-    concat += val == null ? "" : String(val);
+  if (Array.isArray(raw) && raw.length > 0) {
+    return raw.map((c) => String(c).trim()).filter(Boolean);
   }
-  concat += String(body.timestamp);
-  concat += eventsSecret;
-  const computed = crypto.createHash("sha256").update(concat, "utf8").digest("hex").toLowerCase();
-  const expected = (body.signature.checksum || headerChecksum || "").toLowerCase();
-  if (!expected) return { ok: false, reason: "no_checksum" };
-  return { ok: computed === expected, skipped: false };
+  if (ticket.secureCode) return [String(ticket.secureCode).trim()].filter(Boolean);
+  return [];
 }
 
 function collaboratorKeyFromEmail(email) {
   return String(email || "").replace(/[@.]/g, "_");
 }
 
-/** Dueño del evento o colaborador registrado (misma clave que el front). */
+/** Dueño del evento o colaborador registrado. */
 async function canAccessEventTickets(uid, email, ownerUid, discotecaId, eventoId) {
   if (!uid || !ownerUid || !discotecaId || !eventoId) return false;
   if (uid === ownerUid) return true;
@@ -97,6 +91,19 @@ async function canAccessEventTickets(uid, email, ownerUid, discotecaId, eventoId
     .get();
   return snap.exists();
 }
+
+async function verifyAuth(req) {
+  const authHeader = String(req.headers.authorization || "");
+  const m = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!m) return null;
+  try {
+    return await admin.auth().verifyIdToken(m[1]);
+  } catch (_) {
+    return null;
+  }
+}
+
+// ===================== CORREO (Resend, opcional) =====================
 
 async function qrPngBase64(secureCode) {
   const buf = await QRCode.toBuffer(String(secureCode), { type: "png", width: 320, margin: 2 });
@@ -111,18 +118,11 @@ function normalizeSecureCodes(opts) {
   return one ? [one] : [];
 }
 
-/**
- * Envía correo con uno o varios QR (Resend). Si no hay API key, no hace nada.
- * @returns {Promise<{ sent: boolean, reason?: string }>}
- */
 async function sendTicketQrEmailResend(opts) {
   const apiKey = env("RESEND_API_KEY");
-  if (!apiKey) {
-    console.warn("RESEND_API_KEY no definido; se omite el envío de correo");
-    return { sent: false, reason: "no_api_key" };
-  }
+  if (!apiKey) return { sent: false, reason: "no_api_key" };
 
-  const from = env("RESEND_FROM") || "Ticket Free <onboarding@resend.dev>";
+  const from = env("RESEND_FROM") || "Festi <onboarding@resend.dev>";
   const to = String(opts.to || "").trim();
   if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
     return { sent: false, reason: "invalid_email" };
@@ -141,7 +141,6 @@ async function sendTicketQrEmailResend(opts) {
   const imgW = codes.length > 15 ? 180 : codes.length > 8 ? 220 : 260;
   const blocks = [];
   const attachments = [];
-  /** Gmail y otros bloquean data:image en HTML; Resend usa CID (adjunto inline). */
   const maxAttachments = 100;
 
   for (let i = 0; i < codes.length; i++) {
@@ -162,14 +161,11 @@ async function sendTicketQrEmailResend(opts) {
   }
 
   const subject =
-    codes.length === 1
-      ? `Tu entrada — ${nombreEvento}`
-      : `Tus ${codes.length} entradas — ${nombreEvento}`;
-
+    codes.length === 1 ? `Tu entrada — ${nombreEvento}` : `Tus ${codes.length} entradas — ${nombreEvento}`;
   const intro =
     codes.length === 1
-      ? "Tu pago fue registrado. Presenta este código QR en la entrada."
-      : `Tu pago fue registrado. Cada QR es una entrada distinta (${codes.length} en total). Presenta cada uno en la puerta.`;
+      ? "Presenta este código QR en la entrada."
+      : `Cada QR es una entrada distinta (${codes.length} en total). Presenta cada uno en la puerta.`;
 
   const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"/></head>
@@ -180,218 +176,44 @@ async function sendTicketQrEmailResend(opts) {
   <p>Tipo: ${tipoEntrada} · Entradas: ${cantidad}</p>
   <hr style="border:none;border-top:1px solid #eee;margin:20px 0;"/>
   ${blocks.join("")}
-  <p style="font-size:12px;color:#666;margin-top:20px;">Si no ves los QR arriba, abre los archivos <strong>entrada-01.png</strong>, etc. del correo (mismas imágenes adjuntas).</p>
 </body></html>`;
 
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from,
-      to: [to],
-      subject,
-      html,
-      attachments,
-    }),
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to: [to], subject, html, attachments }),
   });
 
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    console.error("Resend error", res.status, body);
     let resendMessage = "";
-    if (typeof body.message === "string") {
-      resendMessage = body.message;
-    } else if (Array.isArray(body.message)) {
+    if (typeof body.message === "string") resendMessage = body.message;
+    else if (Array.isArray(body.message)) {
       resendMessage = body.message
         .map((m) => (typeof m === "object" && m?.message ? m.message : String(m)))
         .filter(Boolean)
         .join("; ");
-    } else if (body.error) {
-      resendMessage = String(body.error);
-    }
-    return {
-      sent: false,
-      reason: "resend_http",
-      resendStatus: res.status,
-      resendMessage: resendMessage || `HTTP ${res.status}`,
-    };
+    } else if (body.error) resendMessage = String(body.error);
+    return { sent: false, reason: "resend_http", resendStatus: res.status, resendMessage };
   }
   return { sent: true };
 }
 
-exports.prepareWompiPayment = onRequest(
-  { cors: true, invoker: "public" },
-  async (req, res) => {
-    if (req.method === "OPTIONS") {
-      res.status(204).send("");
-      return;
-    }
-    if (req.method !== "POST") {
-      res.status(405).json({ error: "Method not allowed" });
-      return;
-    }
+// ===================== COMPRA POR TRANSFERENCIA =====================
 
-    const integritySecret = env("WOMPI_INTEGRITY_SECRET");
-    const publicKey = env("WOMPI_PUBLIC_KEY");
-    if (!integritySecret || !publicKey) {
-      res.status(503).json({
-        error:
-          "Pagos no configurados. Define WOMPI_INTEGRITY_SECRET y WOMPI_PUBLIC_KEY en la función (Cloud Run / .env).",
-      });
-      return;
-    }
-
-    const {
-      ownerUid,
-      discotecaId,
-      eventoId,
-      nombreCliente,
-      email,
-      telefono,
-      cantidad,
-    } = req.body || {};
-
-    if (!ownerUid || !discotecaId || !eventoId || !nombreCliente || !email || !telefono) {
-      res.status(400).json({ error: "Faltan datos obligatorios" });
-      return;
-    }
-
-    const snap = await db.ref(`publicEvents/${ownerUid}/${discotecaId}/${eventoId}`).get();
-    if (!snap.exists() || !snap.val().enabled) {
-      res.status(400).json({ error: "Evento no disponible para compra" });
-      return;
-    }
-
-    const pub = snap.val();
-    const unitCOP = parseInt(pub.precioPorEntradaCOP, 10);
-    if (!Number.isFinite(unitCOP) || unitCOP < 100) {
-      res.status(400).json({ error: "Precio inválido en la página pública" });
-      return;
-    }
-
-    let qty = parseInt(cantidad, 10);
-    if (!Number.isFinite(qty) || qty < 1) qty = 1;
-    if (qty > 20) qty = 20;
-
-    const amountInCents = unitCOP * qty * 100;
-    const reference = `TF${Date.now()}${crypto.randomBytes(5).toString("hex")}`.substring(0, 36);
-
-    const pending = {
-      ownerUid,
-      discotecaId,
-      eventoId,
-      nombreCliente: String(nombreCliente).trim().substring(0, 100),
-      email: String(email).trim().substring(0, 120),
-      telefono: String(telefono).trim().substring(0, 30),
-      cantidad: qty,
-      amountInCents,
-      tipoEntrada: (pub.tipoEntrada || "General").substring(0, 80),
-      status: "pending",
-      createdAt: Date.now(),
-    };
-
-    await db.ref(`pendingWompiPurchases/${reference}`).set(pending);
-
-    const currency = "COP";
-    const integrity = wompiWidgetIntegrity(reference, amountInCents, currency, integritySecret);
-
-    const origin =
-      env("PUBLIC_APP_URL") ||
-      (req.headers.origin && String(req.headers.origin)) ||
-      (req.headers.referer && String(req.headers.referer).split("/").slice(0, 3).join("/")) ||
-      "";
-    const baseUrl = origin.replace(/\/$/, "");
-    if (!baseUrl) {
-      res.status(503).json({
-        error:
-          "Configura PUBLIC_APP_URL en la función o abre la compra desde el navegador (header Origin).",
-      });
-      return;
-    }
-
-    res.json({
-      publicKey,
-      reference,
-      amountInCents,
-      currency,
-      signature: { integrity },
-      redirectUrl: `${baseUrl}/entrada/${encodeURIComponent(reference)}`,
-    });
+exports.submitTransferOrder = onRequest({ cors: true, invoker: "public" }, async (req, res) => {
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
+    return;
   }
-);
-
-exports.wompiWebhook = onRequest({ cors: false, invoker: "public" }, async (req, res) => {
   if (req.method !== "POST") {
-    res.status(405).send("Method not allowed");
+    res.status(405).json({ error: "Method not allowed" });
     return;
   }
 
-  const body = req.body;
-  const eventsSecret = env("WOMPI_EVENTS_SECRET");
-  const headerChecksum = String(
-    req.headers["x-event-checksum"] || req.headers["X-Event-Checksum"] || ""
-  );
-
-  if (eventsSecret) {
-    const v = verifyWompiEventFromRequest(body, headerChecksum, eventsSecret);
-    if (!v.ok) {
-      console.warn("Wompi webhook: checksum inválido", v.reason);
-      res.status(401).send("Invalid signature");
-      return;
-    }
-  } else {
-    console.warn("Wompi webhook: WOMPI_EVENTS_SECRET no definido; se acepta el evento sin verificar firma");
-  }
-
-  if (body?.event && body.event !== "transaction.updated") {
-    res.status(200).send("OK");
-    return;
-  }
-
-  let transaction = null;
-  if (body?.data?.transaction) {
-    transaction = body.data.transaction;
-  } else if (body?.transaction) {
-    transaction = body.transaction;
-  }
-
-  if (!transaction?.reference) {
-    res.status(200).send("OK");
-    return;
-  }
-
-  const status = (transaction.status || "").toUpperCase();
-  if (status !== "APPROVED") {
-    res.status(200).send("OK");
-    return;
-  }
-
-  const reference = transaction.reference;
-  if (!reference.startsWith("TF")) {
-    res.status(200).send("OK");
-    return;
-  }
-
-  const pendingRef = db.ref(`pendingWompiPurchases/${reference}`);
-  const pendingSnap = await pendingRef.get();
-  if (!pendingSnap.exists()) {
-    res.status(200).send("OK");
-    return;
-  }
-
-  const p = pendingSnap.val();
-  if (p.status === "completed") {
-    res.status(200).send("OK");
-    return;
-  }
-
-  const txAmount = Number(transaction.amount_in_cents);
-  if (Number.isFinite(txAmount) && Number.isFinite(p.amountInCents) && txAmount !== p.amountInCents) {
-    console.warn("Wompi webhook: monto no coincide con pending", { txAmount, pending: p.amountInCents });
-    res.status(400).send("Amount mismatch");
+  const decoded = await verifyAuth(req);
+  if (!decoded) {
+    res.status(401).json({ error: "Debes iniciar sesión para comprar" });
     return;
   }
 
@@ -399,18 +221,44 @@ exports.wompiWebhook = onRequest({ cors: false, invoker: "public" }, async (req,
     ownerUid,
     discotecaId,
     eventoId,
-    nombreCliente,
-    telefono,
     cantidad,
-    tipoEntrada,
-    amountInCents,
-  } = p;
-  const ticketsRef = db.ref(`users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`);
-  const ticketRef = ticketsRef.push();
-  const ticketId = ticketRef.key;
+    nombre,
+    cedula,
+    email,
+    telefono,
+    comprobantePath,
+    comprobanteUrl,
+    esColaborador,
+  } = req.body || {};
+
+  if (!ownerUid || !discotecaId || !eventoId || !nombre || !cedula || !email || !telefono) {
+    res.status(400).json({ error: "Faltan datos obligatorios (nombre, cédula, correo, teléfono)" });
+    return;
+  }
+  if (!comprobantePath || !comprobanteUrl) {
+    res.status(400).json({ error: "Falta el comprobante de la transferencia" });
+    return;
+  }
+
+  const snap = await db.ref(`publicEvents/${ownerUid}/${discotecaId}/${eventoId}`).get();
+  if (!snap.exists() || !snap.val().enabled) {
+    res.status(400).json({ error: "Este evento no está disponible para compra" });
+    return;
+  }
+  const pub = snap.val();
+  const unitCOP = parseInt(pub.precioPorEntradaCOP, 10);
+  if (!Number.isFinite(unitCOP) || unitCOP < 100) {
+    res.status(400).json({ error: "Precio inválido en la página del evento" });
+    return;
+  }
+
   let qty = parseInt(cantidad, 10);
   if (!Number.isFinite(qty) || qty < 1) qty = 1;
-  if (qty > 100) qty = 100;
+  if (qty > 20) qty = 20;
+
+  const holderEmail = normalizeEmail(email);
+  const totalCOP = unitCOP * qty;
+
   const seen = new Set();
   const secureCodes = [];
   while (secureCodes.length < qty) {
@@ -420,91 +268,408 @@ exports.wompiWebhook = onRequest({ cors: false, invoker: "public" }, async (req,
       secureCodes.push(c);
     }
   }
-  const secureCode = secureCodes[0];
-  const precioCOP = Math.round(amountInCents / 100);
+  const codeHolders = {};
+  for (const c of secureCodes) codeHolders[c] = holderEmail;
+
+  const ticketsRef = db.ref(`users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets`);
+  const ticketRef = ticketsRef.push();
+  const ticketId = ticketRef.key;
+
+  const nombreEvento = (pub.nombreEvento || "Evento").substring(0, 200);
+  const nombreDiscoteca = (pub.nombreDiscoteca || "").substring(0, 200);
+  const fecha = (pub.fecha || "").substring(0, 120);
+  const ubicacion = (pub.ubicacion || "").substring(0, 200);
 
   const ticket = {
     id: ticketId,
-    secureCode,
+    secureCode: secureCodes[0],
     secureCodes,
-    nombreCliente,
-    telefono,
-    tipoEntrada: tipoEntrada || "General",
-    precio: `${precioCOP} COP (Wompi)`,
+    nombreCliente: String(nombre).trim().substring(0, 120),
+    cedula: String(cedula).trim().substring(0, 30),
+    telefono: String(telefono).trim().substring(0, 30),
+    emailCliente: holderEmail.substring(0, 120),
+    tipoEntrada: (pub.tipoEntrada || "General").substring(0, 80),
+    precio: `${totalCOP} COP (transferencia)`,
     cantidadBoletas: qty,
-    estado: "pagado",
-    emailCliente: p.email || "",
-    fuentePago: "wompi",
-    wompiTransactionId: transaction.id || "",
-    wompiReference: reference,
+    estado: "sin_validar",
+    fuentePago: "transferencia",
+    comprobanteUrl: String(comprobanteUrl).substring(0, 1000),
+    comprobantePath: String(comprobantePath).substring(0, 500),
+    compradorUid: decoded.uid,
+    compradorEmail: normalizeEmail(decoded.email),
+    vendidoPorColaborador: !!esColaborador,
+    codeHolders,
+    nombreEvento,
+    eventoNombre: nombreEvento,
+    fecha,
+    ubicacion,
+    nombreDiscoteca,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
 
   await ticketRef.set(ticket);
 
-  const pubSnap = await db.ref(`publicEvents/${ownerUid}/${discotecaId}/${eventoId}`).get();
-  const pub = pubSnap.exists() ? pubSnap.val() : {};
-  const nombreEvento = (pub.nombreEvento || "Evento").substring(0, 200);
-  const nombreDiscoteca = (pub.nombreDiscoteca || "").substring(0, 200);
-  const fecha = (pub.fecha || "").substring(0, 120);
-  const ubicacion = (pub.ubicacion || "").substring(0, 200);
-
-  const publicSuccess = {
-    secureCode,
-    secureCodes,
+  // Registro del comprobante para las galerías (admin y dueño).
+  await db.ref(`comprobantes/${ownerUid}/${ticketId}`).set({
+    url: ticket.comprobanteUrl,
+    path: ticket.comprobantePath,
     ticketId,
     ownerUid,
     discotecaId,
     eventoId,
-    nombreCliente: String(nombreCliente).substring(0, 100),
     nombreEvento,
-    nombreDiscoteca,
-    fecha,
-    ubicacion,
-    tipoEntrada: ticket.tipoEntrada,
-    cantidadBoletas: qty,
-    wompiReference: reference,
+    cliente: ticket.nombreCliente,
+    cedula: ticket.cedula,
+    monto: totalCOP,
     createdAt: Date.now(),
-  };
+  });
 
-  await db.ref(`publicPurchaseSuccess/${reference}`).set(publicSuccess);
-
+  // Bitácora
   const logRef = db.ref(`users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/bitacora`).push();
   await logRef.set({
     id: logRef.key,
     accion: "ticket_creado",
-    usuario: { uid: "wompi", email: "webhook@wompi.co", nombre: "Wompi" },
+    usuario: {
+      uid: decoded.uid,
+      email: normalizeEmail(decoded.email),
+      nombre: ticket.nombreCliente,
+    },
     timestamp: Date.now(),
     fecha: new Date().toLocaleString("es-CO"),
     detalles: {
       ticketId,
-      ticketCode: secureCode.substring(0, 12),
-      cliente: nombreCliente,
+      ticketCode: secureCodes[0].substring(0, 12),
+      cliente: ticket.nombreCliente,
       cantidadBoletas: qty,
       precio: ticket.precio,
-      fuente: "wompi_webhook",
+      fuente: "transferencia_pendiente",
     },
   });
 
-  await pendingRef.update({ status: "completed", completedAt: Date.now(), ticketId });
+  res.json({
+    ok: true,
+    ticketId,
+    secureCodes,
+    estado: "sin_validar",
+    nombreEvento,
+    fecha,
+    ubicacion,
+    cantidad: qty,
+    total: totalCOP,
+  });
+});
 
-  const emailTo = String(p.email || "").trim();
-  if (emailTo) {
-    sendTicketQrEmailResend({
-      to: emailTo,
-      secureCodes,
-      nombreCliente,
-      nombreEvento,
-      nombreDiscoteca,
-      fecha,
-      tipoEntrada: ticket.tipoEntrada,
-      cantidadBoletas: qty,
-    }).catch((err) => console.error("Wompi webhook: correo QR", err));
+// ===================== TRANSFERENCIA DE QRs =====================
+
+exports.requestQrTransfer = onRequest({ cors: true, invoker: "public" }, async (req, res) => {
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
+    return;
+  }
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+  const decoded = await verifyAuth(req);
+  if (!decoded) {
+    res.status(401).json({ error: "Debes iniciar sesión" });
+    return;
   }
 
-  res.status(200).send("OK");
+  const callerEmail = normalizeEmail(decoded.email);
+  const { items, toEmail } = req.body || {};
+  const dest = normalizeEmail(toEmail);
+
+  if (!Array.isArray(items) || items.length === 0) {
+    res.status(400).json({ error: "No hay QRs para transferir" });
+    return;
+  }
+  if (!dest || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(dest)) {
+    res.status(400).json({ error: "Correo destino inválido" });
+    return;
+  }
+  if (dest === callerEmail) {
+    res.status(400).json({ error: "No puedes transferirte a ti mismo" });
+    return;
+  }
+  if (items.length > 50) {
+    res.status(400).json({ error: "Demasiados QRs en una sola transferencia" });
+    return;
+  }
+
+  const ticketCache = {};
+  const updates = {};
+  const validItems = [];
+  let nombreEvento = "";
+
+  for (const item of items) {
+    const { ownerUid, discotecaId, eventoId, ticketId, code } = item || {};
+    if (!ownerUid || !discotecaId || !eventoId || !ticketId || !code) continue;
+    const ticketPath = `users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`;
+    if (!ticketCache[ticketPath]) {
+      const tSnap = await db.ref(ticketPath).get();
+      ticketCache[ticketPath] = tSnap.exists() ? tSnap.val() : null;
+    }
+    const ticket = ticketCache[ticketPath];
+    if (!ticket) continue;
+
+    const codes = getTicketSecureCodes(ticket);
+    if (!codes.includes(code)) continue;
+
+    const currentHolder = normalizeEmail((ticket.codeHolders && ticket.codeHolders[code]) || ticket.emailCliente);
+    if (currentHolder !== callerEmail) continue; // solo el poseedor puede transferir
+    if (ticket.estado === "cancelado" || ticket.estado === "entregado") continue;
+    if (ticket.codePending && ticket.codePending[code]) continue; // ya en transferencia
+
+    updates[`${ticketPath}/codePending/${codeToKey(code)}`] = dest;
+    validItems.push({ ownerUid, discotecaId, eventoId, ticketId, code });
+    if (!nombreEvento) nombreEvento = ticket.nombreEvento || ticket.eventoNombre || "Evento";
+  }
+
+  if (validItems.length === 0) {
+    res.status(400).json({ error: "No tienes esos QRs disponibles para transferir" });
+    return;
+  }
+
+  const destKey = emailToKey(dest);
+  const transferRef = db.ref(`pendingTransfers/${destKey}`).push();
+  updates[`pendingTransfers/${destKey}/${transferRef.key}`] = {
+    id: transferRef.key,
+    fromEmail: callerEmail,
+    fromUid: decoded.uid,
+    toEmail: dest,
+    nombreEvento,
+    cantidad: validItems.length,
+    items: validItems,
+    createdAt: Date.now(),
+  };
+
+  await db.ref().update(updates);
+  res.json({ ok: true, transferidos: validItems.length });
 });
+
+exports.acceptQrTransfer = onRequest({ cors: true, invoker: "public" }, async (req, res) => {
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
+    return;
+  }
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+  const decoded = await verifyAuth(req);
+  if (!decoded) {
+    res.status(401).json({ error: "Debes iniciar sesión" });
+    return;
+  }
+
+  const callerEmail = normalizeEmail(decoded.email);
+  const callerKey = emailToKey(callerEmail);
+  const { transferId } = req.body || {};
+  if (!transferId) {
+    res.status(400).json({ error: "Falta el identificador de la transferencia" });
+    return;
+  }
+
+  const transferRef = db.ref(`pendingTransfers/${callerKey}/${transferId}`);
+  const tSnap = await transferRef.get();
+  if (!tSnap.exists()) {
+    res.status(404).json({ error: "Transferencia no encontrada o ya aceptada" });
+    return;
+  }
+
+  const transfer = tSnap.val();
+  const items = Array.isArray(transfer.items) ? transfer.items : [];
+  const updates = {};
+  let aceptados = 0;
+
+  for (const item of items) {
+    const { ownerUid, discotecaId, eventoId, ticketId, code } = item || {};
+    if (!ownerUid || !discotecaId || !eventoId || !ticketId || !code) continue;
+    const ticketPath = `users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`;
+    const ckey = codeToKey(code);
+    const pendingSnap = await db.ref(`${ticketPath}/codePending/${ckey}`).get();
+    const pendingTo = normalizeEmail(pendingSnap.exists() ? pendingSnap.val() : "");
+    if (pendingTo !== callerEmail) continue; // la transferencia no es para este usuario
+
+    updates[`${ticketPath}/codeHolders/${ckey}`] = callerEmail;
+    updates[`${ticketPath}/codePending/${ckey}`] = null;
+    updates[`${ticketPath}/updatedAt`] = Date.now();
+    aceptados++;
+  }
+
+  updates[`pendingTransfers/${callerKey}/${transferId}`] = null;
+  await db.ref().update(updates);
+
+  res.json({ ok: true, aceptados });
+});
+
+exports.cancelQrTransfer = onRequest({ cors: true, invoker: "public" }, async (req, res) => {
+  if (req.method === "OPTIONS") {
+    res.status(204).send("");
+    return;
+  }
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Method not allowed" });
+    return;
+  }
+  const decoded = await verifyAuth(req);
+  if (!decoded) {
+    res.status(401).json({ error: "Debes iniciar sesión" });
+    return;
+  }
+
+  const callerEmail = normalizeEmail(decoded.email);
+  const { items } = req.body || {};
+  if (!Array.isArray(items) || items.length === 0) {
+    res.status(400).json({ error: "No hay QRs para cancelar" });
+    return;
+  }
+  if (items.length > 50) {
+    res.status(400).json({ error: "Demasiados QRs en una sola operación" });
+    return;
+  }
+
+  const ticketCache = {};
+  const pendingByDest = {}; // destKey -> { transfers, originalItems: {transferId: items} }
+  const removeByTransfer = {}; // `${destKey}::${transferId}` -> { destKey, transferId, items, removeSet:Set }
+  const updates = {};
+  let cancelados = 0;
+
+  for (const item of items) {
+    const { ownerUid, discotecaId, eventoId, ticketId, code } = item || {};
+    if (!ownerUid || !discotecaId || !eventoId || !ticketId || !code) continue;
+    const ticketPath = `users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`;
+    if (!ticketCache[ticketPath]) {
+      const tSnap = await db.ref(ticketPath).get();
+      ticketCache[ticketPath] = tSnap.exists() ? tSnap.val() : null;
+    }
+    const ticket = ticketCache[ticketPath];
+    if (!ticket) continue;
+
+    const codes = getTicketSecureCodes(ticket);
+    if (!codes.includes(code)) continue;
+
+    // Solo el poseedor actual del código puede cancelar su transferencia.
+    const holder = normalizeEmail((ticket.codeHolders && ticket.codeHolders[code]) || ticket.emailCliente);
+    if (holder !== callerEmail) continue;
+
+    const ckey = codeToKey(code);
+    const pendingDest =
+      (ticket.codePending && (ticket.codePending[ckey] || ticket.codePending[code])) || null;
+    if (!pendingDest) continue; // no está en transferencia (o ya fue aceptada)
+
+    const destEmail = normalizeEmail(pendingDest);
+    const destKey = emailToKey(destEmail);
+
+    updates[`${ticketPath}/codePending/${ckey}`] = null;
+    updates[`${ticketPath}/updatedAt`] = Date.now();
+    cancelados++;
+
+    if (!pendingByDest[destKey]) {
+      const pSnap = await db.ref(`pendingTransfers/${destKey}`).get();
+      pendingByDest[destKey] = pSnap.exists() ? pSnap.val() : {};
+    }
+    const transfers = pendingByDest[destKey];
+    for (const transferId in transfers) {
+      const tr = transfers[transferId];
+      if (!tr || normalizeEmail(tr.fromEmail) !== callerEmail) continue;
+      const trItems = Array.isArray(tr.items) ? tr.items : [];
+      const contains = trItems.some((it) => it && it.code === code && it.ticketId === ticketId);
+      if (!contains) continue;
+      const mapKey = `${destKey}::${transferId}`;
+      if (!removeByTransfer[mapKey]) {
+        removeByTransfer[mapKey] = { destKey, transferId, items: trItems, removeSet: new Set() };
+      }
+      removeByTransfer[mapKey].removeSet.add(`${ticketId}|${code}`);
+    }
+  }
+
+  // Reconcilia los registros pendingTransfers (quita ítems o borra el registro vacío).
+  for (const mapKey in removeByTransfer) {
+    const { destKey, transferId, items: trItems, removeSet } = removeByTransfer[mapKey];
+    const remaining = trItems.filter((it) => it && !removeSet.has(`${it.ticketId}|${it.code}`));
+    if (remaining.length === 0) {
+      updates[`pendingTransfers/${destKey}/${transferId}`] = null;
+    } else {
+      updates[`pendingTransfers/${destKey}/${transferId}/items`] = remaining;
+      updates[`pendingTransfers/${destKey}/${transferId}/cantidad`] = remaining.length;
+    }
+  }
+
+  if (cancelados === 0) {
+    res.status(400).json({ error: "No tienes transferencias pendientes para cancelar" });
+    return;
+  }
+
+  await db.ref().update(updates);
+  res.json({ ok: true, cancelados });
+});
+
+// ===================== TRIGGER: ÍNDICE userQrs =====================
+
+/**
+ * Mantiene userQrs/{holderKey}/{codeKey} sincronizado con cada ticket.
+ * Se ejecuta en cada creación/edición/borrado de un ticket.
+ */
+exports.syncTicketQrs = onValueWritten(
+  "/users/{ownerUid}/discotecas/{discotecaId}/eventos/{eventoId}/tickets/{ticketId}",
+  async (event) => {
+    const { ownerUid, discotecaId, eventoId, ticketId } = event.params;
+    const before = event.data.before.exists() ? event.data.before.val() : null;
+    const after = event.data.after.exists() ? event.data.after.val() : null;
+
+    const updates = {};
+
+    // 1) Eliminar entradas previas (holder anterior) para evitar duplicados.
+    if (before) {
+      const beforeCodes = getTicketSecureCodes(before);
+      for (const code of beforeCodes) {
+        const holder = normalizeEmail((before.codeHolders && before.codeHolders[code]) || before.emailCliente);
+        if (!holder) continue;
+        updates[`userQrs/${emailToKey(holder)}/${codeToKey(code)}`] = null;
+      }
+    }
+
+    // 2) Escribir entradas actuales.
+    if (after) {
+      const afterCodes = getTicketSecureCodes(after);
+      const canjeadas = after.entradasCanjeadas && typeof after.entradasCanjeadas === "object" ? after.entradasCanjeadas : {};
+      const nombreEvento = after.nombreEvento || after.eventoNombre || "Evento";
+      for (const code of afterCodes) {
+        const holder = normalizeEmail((after.codeHolders && after.codeHolders[code]) || after.emailCliente);
+        if (!holder) continue;
+        let estado = after.estado || "pagado";
+        if (canjeadas[code]) estado = "entregado";
+        const pendingTo = after.codePending && after.codePending[codeToKey(code)]
+          ? normalizeEmail(after.codePending[codeToKey(code)])
+          : (after.codePending && after.codePending[code] ? normalizeEmail(after.codePending[code]) : null);
+        updates[`userQrs/${emailToKey(holder)}/${codeToKey(code)}`] = {
+          ownerUid,
+          discotecaId,
+          eventoId,
+          ticketId,
+          code,
+          nombreEvento,
+          fecha: after.fecha || "",
+          ubicacion: after.ubicacion || "",
+          estado,
+          holderEmail: holder,
+          pendingToEmail: pendingTo || null,
+          createdAt: after.createdAt || Date.now(),
+          updatedAt: Date.now(),
+        };
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await db.ref().update(updates);
+    }
+  }
+);
+
+// ===================== REENVÍO DE QR POR CORREO =====================
 
 exports.resendTicketQrEmail = onRequest({ cors: true, invoker: "public" }, async (req, res) => {
   if (req.method === "OPTIONS") {
@@ -516,18 +681,9 @@ exports.resendTicketQrEmail = onRequest({ cors: true, invoker: "public" }, async
     return;
   }
 
-  const authHeader = String(req.headers.authorization || "");
-  const m = authHeader.match(/^Bearer\s+(.+)$/i);
-  if (!m) {
+  const decoded = await verifyAuth(req);
+  if (!decoded) {
     res.status(401).json({ error: "No autorizado" });
-    return;
-  }
-
-  let decoded;
-  try {
-    decoded = await admin.auth().verifyIdToken(m[1]);
-  } catch (e) {
-    res.status(401).json({ error: "Token inválido" });
     return;
   }
 
@@ -560,31 +716,15 @@ exports.resendTicketQrEmail = onRequest({ cors: true, invoker: "public" }, async
 
   const pubSnap = await db.ref(`publicEvents/${ownerUid}/${discotecaId}/${eventoId}`).get();
   const pub = pubSnap.exists() ? pubSnap.val() : {};
-  const nombreEvento = (pub.nombreEvento || "Evento").substring(0, 200);
-  const nombreDiscoteca = (pub.nombreDiscoteca || "").substring(0, 200);
-  const fecha = (pub.fecha || "").substring(0, 120);
-
-  let raw = t.secureCodes;
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    raw = Object.keys(raw)
-      .filter((k) => /^\d+$/.test(k))
-      .sort((a, b) => Number(a) - Number(b))
-      .map((k) => raw[k]);
-  }
-  const codes =
-    Array.isArray(raw) && raw.length > 0
-      ? raw.map((c) => String(c).trim()).filter(Boolean)
-      : t.secureCode
-        ? [String(t.secureCode).trim()]
-        : [];
+  const codes = getTicketSecureCodes(t);
 
   const result = await sendTicketQrEmailResend({
     to: emailTo,
     secureCodes: codes,
     nombreCliente: t.nombreCliente,
-    nombreEvento,
-    nombreDiscoteca,
-    fecha,
+    nombreEvento: (pub.nombreEvento || t.nombreEvento || "Evento").substring(0, 200),
+    nombreDiscoteca: (pub.nombreDiscoteca || "").substring(0, 200),
+    fecha: (pub.fecha || t.fecha || "").substring(0, 120),
     tipoEntrada: t.tipoEntrada,
     cantidadBoletas: t.cantidadBoletas,
   });
@@ -597,10 +737,9 @@ exports.resendTicketQrEmail = onRequest({ cors: true, invoker: "public" }, async
     if (result.resendMessage) {
       error = result.resendMessage.length > 280 ? `${result.resendMessage.slice(0, 280)}…` : result.resendMessage;
     }
-    const hint =
-      /testing|verified domain|only send|own email|sandbox/i.test(String(result.resendMessage || ""))
-        ? "En Resend debes verificar un dominio propio y usar RESEND_FROM con ese dominio (ej. entradas@tudominio.com) para enviar a cualquier correo. Con onboarding@resend.dev solo suele llegar a tu email de cuenta."
-        : undefined;
+    const hint = /testing|verified domain|only send|own email|sandbox/i.test(String(result.resendMessage || ""))
+      ? "En Resend verifica un dominio propio y usa RESEND_FROM con ese dominio para enviar a cualquier correo."
+      : undefined;
     res.status(503).json({ error, ...(hint ? { hint } : {}) });
     return;
   }

@@ -36,8 +36,14 @@ export const validators = {
   },
   
   estado(estado) {
-    const estadosPermitidos = ['pagado', 'entregado', 'cancelado'];
+    const estadosPermitidos = ['sin_validar', 'pagado', 'entregado', 'cancelado'];
     return estadosPermitidos.includes(estado);
+  },
+
+  cedula(cedula) {
+    if (!cedula || typeof cedula !== 'string') return false;
+    const digits = cedula.replace(/\D/g, '');
+    return digits.length >= 5 && digits.length <= 15;
   }
 };
 

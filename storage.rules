@@ -1,0 +1,34 @@
+rules_version = '2';
+
+// Reglas de Firebase Storage para Ticket Free (Festi).
+// Estructura: comprobantes/{ownerUid}/{eventoId}/{uploaderUid}/{archivo}
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email == 'ambuila106@gmail.com';
+    }
+
+    // Comprobantes de transferencia (pantallazos de pago)
+    match /comprobantes/{ownerUid}/{eventoId}/{uploaderUid}/{fileName} {
+      // Lo ven: quien lo subió (para obtener su URL), el dueño del evento y el admin.
+      allow read: if request.auth != null
+        && (request.auth.uid == uploaderUid
+            || request.auth.uid == ownerUid
+            || isAdmin());
+
+      // Cada usuario autenticado sube su propio comprobante (imágenes ≤ 5MB).
+      allow create: if request.auth != null
+        && request.auth.uid == uploaderUid
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+
+      // El dueño del evento, el admin o quien lo subió pueden borrar (libera espacio).
+      allow delete: if request.auth != null
+        && (request.auth.uid == ownerUid
+            || request.auth.uid == uploaderUid
+            || isAdmin());
+    }
+  }
+}

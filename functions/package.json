@@ -1,6 +1,6 @@
 {
   "name": "ticket-free-functions",
-  "description": "Wompi: preparar pago y webhook",
+  "description": "Pago por transferencia manual, transferencia de QRs, índice userQrs y reenvío de QR por correo",
   "engines": {
     "node": "20"
   },

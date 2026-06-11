@@ -14,6 +14,7 @@
         <span v-else>Iniciando sesión...</span>
       </button>
       <p v-if="error" class="error">{{ error }}</p>
+      <router-link to="/eventos" class="events-link">Ver eventos próximos</router-link>
       <p class="credit">Creada por <strong>Brandon Ambuila</strong></p>
     </div>
   </div>
@@ -23,6 +24,7 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { authService } from '../services/authService';
+import { userService } from '../services/userService';
 
 const router = useRouter();
 const loading = ref(false);
@@ -35,6 +37,8 @@ const loginWithGoogle = async () => {
   const result = await authService.loginWithGoogle();
   
   if (result.success) {
+    // Registrar el inicio de sesión (para el panel de administración)
+    await userService.registerLogin(result.user);
     router.push('/select-role');
   } else {
     error.value = result.error || 'Error al iniciar sesión';
@@ -106,6 +110,19 @@ h1 {
   color: #e74c3c;
   margin-top: 15px;
   font-size: 14px;
+}
+
+.events-link {
+  display: inline-block;
+  margin-top: 18px;
+  color: #667eea;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.events-link:hover {
+  text-decoration: underline;
 }
 
 .credit {

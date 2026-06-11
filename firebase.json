@@ -2,6 +2,9 @@
   "database": {
     "rules": "FIREBASE_SECURITY_RULES.json"
   },
+  "storage": {
+    "rules": "storage.rules"
+  },
   "functions": {
     "source": "functions"
   },
@@ -14,12 +17,16 @@
     ],
     "rewrites": [
       {
-        "source": "/api/prepareWompiPayment",
-        "function": "prepareWompiPayment"
+        "source": "/api/submitTransferOrder",
+        "function": "submitTransferOrder"
       },
       {
-        "source": "/api/wompiWebhook",
-        "function": "wompiWebhook"
+        "source": "/api/requestQrTransfer",
+        "function": "requestQrTransfer"
+      },
+      {
+        "source": "/api/acceptQrTransfer",
+        "function": "acceptQrTransfer"
       },
       {
         "source": "/api/resendTicketQrEmail",

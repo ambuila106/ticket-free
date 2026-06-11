@@ -1,17 +1,19 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import { authService } from '../services/authService';
+import { userService } from '../services/userService';
+import { isAdminEmail } from '../config/appConfig';
 
 const routes = [
+  {
+    path: '/eventos',
+    name: 'Landing',
+    component: () => import('../views/LandingView.vue'),
+    meta: { requiresAuth: false }
+  },
   {
     path: '/comprar/:ownerUid/:discotecaId/:eventoId',
     name: 'PublicEvento',
     component: () => import('../views/PublicEventView.vue'),
-    meta: { requiresAuth: false }
-  },
-  {
-    path: '/entrada/:reference',
-    name: 'PublicEntrada',
-    component: () => import('../views/PublicEntradaView.vue'),
     meta: { requiresAuth: false }
   },
   {
@@ -24,6 +26,18 @@ const routes = [
     path: '/select-role',
     name: 'SelectRole',
     component: () => import('../views/SelectRoleView.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/admin',
+    name: 'Admin',
+    component: () => import('../views/AdminView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/mis-qrs',
+    name: 'MisQrs',
+    component: () => import('../views/MisQrsView.vue'),
     meta: { requiresAuth: true }
   },
   {
@@ -74,7 +88,32 @@ router.beforeEach(async (to, from, next) => {
     return;
   }
 
-  // Verificar rol
+  // Rutas exclusivas del administrador
+  if (to.meta.requiresAdmin) {
+    if (!user || !isAdminEmail(user.email)) {
+      next('/select-role');
+      return;
+    }
+    next();
+    return;
+  }
+
+  // Rol organizador: requiere permiso habilitado por el administrador
+  if (to.meta.requiresRole === 'organizador') {
+    if (userRole !== 'organizador') {
+      next('/select-role');
+      return;
+    }
+    const enabled = await userService.isOrganizerEnabled(user);
+    if (!enabled) {
+      next('/select-role');
+      return;
+    }
+    next();
+    return;
+  }
+
+  // Verificar otros roles
   if (to.meta.requiresRole && userRole !== to.meta.requiresRole) {
     next('/select-role');
     return;
@@ -86,10 +125,7 @@ router.beforeEach(async (to, from, next) => {
     return;
   }
 
-  // Para rutas de eventos, la verificación de permisos de colaborador
-  // se hace en el componente EventoView
   next();
 });
 
 export default router;
-

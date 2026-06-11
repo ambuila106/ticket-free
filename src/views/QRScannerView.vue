@@ -81,6 +81,11 @@
             <p>Todas las entradas de esta compra ya fueron entregadas.</p>
           </div>
 
+          <div v-else-if="scannedTicket.ticket.estado === 'sin_validar'" class="info-message warning">
+            <p><strong>⚠️ Pago sin validar.</strong></p>
+            <p>El organizador aún no ha confirmado la transferencia de esta compra. No se puede dar ingreso hasta que el pedido quede en estado <strong>pagado</strong>.</p>
+          </div>
+
           <div v-else class="info-message">
             <p>Este ticket está cancelado.</p>
           </div>
@@ -652,6 +657,17 @@ const goBack = async () => {
 .status-badge.cancelado {
   background: #f8d7da;
   color: #721c24;
+}
+
+.status-badge.sin_validar {
+  background: #e7e0ff;
+  color: #5b3cc4;
+}
+
+.info-message.warning {
+  background: #fff8e1;
+  border: 1px solid #ffe0a3;
+  color: #7a5b00;
 }
 
 .delivery-answer {

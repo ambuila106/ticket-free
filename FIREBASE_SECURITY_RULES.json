@@ -1,5 +1,71 @@
 {
   "rules": {
+    "appUsers": {
+      ".read": "auth != null && auth.token.email === 'ambuila106@gmail.com'",
+      "$uid": {
+        ".read": "auth != null && ($uid === auth.uid || auth.token.email === 'ambuila106@gmail.com')",
+        ".write": "auth != null && auth.token.email === 'ambuila106@gmail.com'",
+        "uid": { ".write": "auth != null && $uid === auth.uid" },
+        "email": { ".write": "auth != null && $uid === auth.uid" },
+        "emailLower": { ".write": "auth != null && $uid === auth.uid" },
+        "displayName": { ".write": "auth != null && $uid === auth.uid" },
+        "photoURL": { ".write": "auth != null && $uid === auth.uid" },
+        "firstLoginAt": { ".write": "auth != null && $uid === auth.uid" },
+        "lastLoginAt": { ".write": "auth != null && $uid === auth.uid" },
+        "loginCount": { ".write": "auth != null && $uid === auth.uid" },
+        "buyerProfile": { ".write": "auth != null && $uid === auth.uid" },
+        ".validate": "newData.hasChildren(['email'])"
+      }
+    },
+    "eventsIndex": {
+      ".read": true,
+      "$ownerUid": {
+        "$discotecaId": {
+          "$eventoId": {
+            ".write": "auth != null && auth.token.email === 'ambuila106@gmail.com'",
+            "ownerUid": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "discotecaId": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "eventoId": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "nombre": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "fecha": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "fechaTimestamp": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "ubicacion": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "descripcion": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "ownerEmail": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "nombreDiscoteca": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "precioPorEntradaCOP": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "publicEnabled": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "imagenUrl": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "createdAt": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "updatedAt": { ".write": "auth != null && auth.uid === $ownerUid" },
+            "showOnHome": { ".write": "auth != null && auth.token.email === 'ambuila106@gmail.com'" },
+            ".validate": "newData.hasChildren(['nombre'])"
+          }
+        }
+      }
+    },
+    "userQrs": {
+      "$emailKey": {
+        ".read": "auth != null && ((auth.token.email != null && $emailKey === auth.token.email.toLowerCase().replace('@', '_').replace('.', '_')) || auth.token.email === 'ambuila106@gmail.com')",
+        ".write": "auth != null && auth.token.email === 'ambuila106@gmail.com'"
+      }
+    },
+    "pendingTransfers": {
+      "$emailKey": {
+        ".read": "auth != null && ((auth.token.email != null && $emailKey === auth.token.email.toLowerCase().replace('@', '_').replace('.', '_')) || auth.token.email === 'ambuila106@gmail.com')",
+        ".write": "auth != null && auth.token.email === 'ambuila106@gmail.com'"
+      }
+    },
+    "comprobantes": {
+      ".read": "auth != null && auth.token.email === 'ambuila106@gmail.com'",
+      "$ownerUid": {
+        ".read": "auth != null && ($ownerUid === auth.uid || auth.token.email === 'ambuila106@gmail.com')",
+        ".write": "auth != null && ($ownerUid === auth.uid || auth.token.email === 'ambuila106@gmail.com')",
+        "$ticketId": {
+          ".validate": "newData.hasChildren(['url', 'path'])"
+        }
+      }
+    },
     "publicEvents": {
       "$ownerUid": {
         "$discotecaId": {
@@ -9,16 +75,6 @@
             ".validate": "newData.hasChildren(['enabled', 'nombreEvento', 'fecha', 'updatedAt']) && newData.child('enabled').isBoolean() && newData.child('nombreEvento').isString() && newData.child('fecha').isString() && newData.child('updatedAt').isNumber()"
           }
         }
-      }
-    },
-    "pendingWompiPurchases": {
-      ".read": false,
-      ".write": false
-    },
-    "publicPurchaseSuccess": {
-      "$reference": {
-        ".read": true,
-        ".write": false
       }
     },
     "collaboratorEvents": {
@@ -53,7 +109,7 @@
                   ".read": "$uid === auth.uid || (auth.token.email != null && root.child('users').child($uid).child('discotecas').child($discotecaId).child('eventos').child($eventoId).child('colaboradores').child(auth.token.email.replace('@', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_')).exists())",
                   ".write": "$uid === auth.uid || (auth.token.email != null && root.child('users').child($uid).child('discotecas').child($discotecaId).child('eventos').child($eventoId).child('colaboradores').child(auth.token.email.replace('@', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_')).child('permisos').child('crearTickets').val() === true || root.child('users').child($uid).child('discotecas').child($discotecaId).child('eventos').child($eventoId).child('colaboradores').child(auth.token.email.replace('@', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_').replace('.', '_')).child('permisos').child('leerQR').val() === true)",
                   "$ticketId": {
-                    ".validate": "newData.hasChildren(['secureCode', 'estado', 'createdAt', 'cantidadBoletas']) && newData.child('estado').val().matches(/^(pagado|entregado|cancelado)$/) && newData.child('cantidadBoletas').val() > 0 && newData.child('cantidadBoletas').val() <= 100 && newData.child('secureCode').isString() && newData.child('secureCode').val().length > 0"
+                    ".validate": "newData.hasChildren(['secureCode', 'estado', 'createdAt', 'cantidadBoletas']) && newData.child('estado').val().matches(/^(sin_validar|pagado|entregado|cancelado)$/) && newData.child('cantidadBoletas').val() > 0 && newData.child('cantidadBoletas').val() <= 100 && newData.child('secureCode').isString() && newData.child('secureCode').val().length > 0"
                   }
                 },
                 ".validate": "newData.hasChildren(['nombre', 'fecha', 'createdAt'])"

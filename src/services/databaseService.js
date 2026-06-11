@@ -535,17 +535,6 @@ export const databaseService = {
     });
   },
 
-  /**
-   * Lectura pública tras pago Wompi (solo escribe el webhook).
-   * @param {string} purchaseReference - Referencia TF... devuelta por prepareWompiPayment
-   */
-  subscribeToPublicPurchaseSuccess(purchaseReference, callback) {
-    const r = ref(database, `publicPurchaseSuccess/${purchaseReference}`);
-    return onValue(r, (snapshot) => {
-      callback(snapshot.exists() ? snapshot.val() : null);
-    });
-  },
-
   /** Solo el dueño puede escribir (reglas Firebase) */
   async setPublicEventPage(ownerUid, discotecaId, eventoId, pageData) {
     const pageRef = ref(database, `publicEvents/${ownerUid}/${discotecaId}/${eventoId}`);
@@ -553,6 +542,137 @@ export const databaseService = {
       ...pageData,
       updatedAt: Date.now(),
     });
+  },
+
+  // ========== ÍNDICE DE EVENTOS (catálogo / landing / admin) ==========
+
+  /**
+   * Crea/actualiza la entrada del evento en el catálogo público.
+   * Usa update (patch) para no pisar showOnHome (controlado por el admin).
+   */
+  async upsertEventIndex(ownerUid, discotecaId, eventoId, data) {
+    const indexRef = ref(database, `eventsIndex/${ownerUid}/${discotecaId}/${eventoId}`);
+    await update(indexRef, {
+      ownerUid,
+      discotecaId,
+      eventoId,
+      ...data,
+      updatedAt: Date.now(),
+    });
+  },
+
+  /** Lee los eventos visibles para la landing pública (/eventos). */
+  async getPublicHomeEvents() {
+    const snap = await get(ref(database, "eventsIndex"));
+    if (!snap.exists()) return [];
+    const data = snap.val();
+    const events = [];
+    for (const ownerUid in data) {
+      const discotecas = data[ownerUid] || {};
+      for (const discotecaId in discotecas) {
+        const eventos = discotecas[discotecaId] || {};
+        for (const eventoId in eventos) {
+          const ev = eventos[eventoId] || {};
+          if (ev.showOnHome === true && ev.publicEnabled === true) {
+            events.push({ ownerUid, discotecaId, eventoId, ...ev });
+          }
+        }
+      }
+    }
+    return events.sort((a, b) => {
+      const ta = Number(a.fechaTimestamp) || Number(a.createdAt) || 0;
+      const tb = Number(b.fechaTimestamp) || Number(b.createdAt) || 0;
+      return tb - ta;
+    });
+  },
+
+  // ========== PEDIDOS (verificación de transferencias) ==========
+
+  /** El dueño verifica la transferencia: el pedido pasa a "pagado". */
+  async verifyOrder(ownerUid, discotecaId, eventoId, ticketId) {
+    await this.updateTicketStatus(ownerUid, discotecaId, eventoId, ticketId, "pagado");
+  },
+
+  /** El dueño rechaza la transferencia: el pedido pasa a "cancelado". */
+  async rejectOrder(ownerUid, discotecaId, eventoId, ticketId) {
+    await this.updateTicketStatus(ownerUid, discotecaId, eventoId, ticketId, "cancelado");
+  },
+
+  // ========== COMPROBANTES (galería / borrado) ==========
+
+  /** Lee los comprobantes de un dueño (para su galería). */
+  async getOwnerComprobantes(ownerUid) {
+    const snap = await get(ref(database, `comprobantes/${ownerUid}`));
+    if (!snap.exists()) return [];
+    const data = snap.val();
+    return Object.entries(data)
+      .map(([ticketId, info]) => ({ ticketId, ownerUid, ...info }))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  },
+
+  /**
+   * Borra el registro del comprobante en la BD y limpia los campos del ticket.
+   * (El archivo del Storage se borra aparte con storageService.)
+   */
+  async removeComprobanteRecord(ownerUid, discotecaId, eventoId, ticketId) {
+    const ops = [remove(ref(database, `comprobantes/${ownerUid}/${ticketId}`))];
+    if (discotecaId && eventoId && ticketId) {
+      ops.push(
+        update(
+          ref(database, `users/${ownerUid}/discotecas/${discotecaId}/eventos/${eventoId}/tickets/${ticketId}`),
+          { comprobanteUrl: null, comprobantePath: null, comprobanteBorrado: true, updatedAt: Date.now() }
+        )
+      );
+    }
+    await Promise.allSettled(ops);
+  },
+
+  // ========== MIS QRs / TRANSFERENCIAS ==========
+
+  /** Lee los QRs que posee un usuario (por clave de correo). */
+  async getMyQrs(emailKey) {
+    const snap = await get(ref(database, `userQrs/${emailKey}`));
+    if (!snap.exists()) return [];
+    return Object.entries(snap.val()).map(([key, info]) => ({ key, ...info }));
+  },
+
+  subscribeToMyQrs(emailKey, callback, onError = null) {
+    const r = ref(database, `userQrs/${emailKey}`);
+    return onValue(
+      r,
+      (snap) => {
+        const list = snap.exists()
+          ? Object.entries(snap.val()).map(([key, info]) => ({ key, ...info }))
+          : [];
+        callback(list);
+      },
+      (error) => {
+        if (typeof onError === "function") onError(error);
+      }
+    );
+  },
+
+  /** Lee las transferencias pendientes dirigidas a un correo. */
+  async getPendingTransfers(emailKey) {
+    const snap = await get(ref(database, `pendingTransfers/${emailKey}`));
+    if (!snap.exists()) return [];
+    return Object.entries(snap.val()).map(([id, info]) => ({ id, ...info }));
+  },
+
+  subscribeToPendingTransfers(emailKey, callback, onError = null) {
+    const r = ref(database, `pendingTransfers/${emailKey}`);
+    return onValue(
+      r,
+      (snap) => {
+        const list = snap.exists()
+          ? Object.entries(snap.val()).map(([id, info]) => ({ id, ...info }))
+          : [];
+        callback(list);
+      },
+      (error) => {
+        if (typeof onError === "function") onError(error);
+      }
+    );
   },
 };
 

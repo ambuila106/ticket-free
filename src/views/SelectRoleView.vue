@@ -3,21 +3,47 @@
     <div class="role-card">
       <h1>Selecciona tu rol</h1>
       <p class="user-info">Hola, {{ user?.displayName || user?.email }}</p>
-      
-      <div class="role-options">
-        <button @click="selectRole('organizador')" class="role-btn">
+
+      <div v-if="loading" class="loading">Cargando...</div>
+
+      <div v-else class="role-options">
+        <button v-if="isAdmin" @click="goAdmin" class="role-btn admin">
+          <div class="role-icon">🛡️</div>
+          <h2>Administrador</h2>
+          <p>Gestiona usuarios, permisos y eventos</p>
+        </button>
+
+        <button
+          v-if="organizerEnabled"
+          @click="selectRole('organizador')"
+          class="role-btn"
+        >
           <div class="role-icon">🎪</div>
           <h2>Organizador</h2>
           <p>Gestiona tus discotecas y eventos</p>
         </button>
-        
+
+        <div v-else class="role-btn disabled">
+          <div class="role-icon">🎪</div>
+          <h2>Organizador</h2>
+          <p class="pending-note">
+            Necesitas que un administrador active esta función para tu cuenta.
+          </p>
+        </div>
+
         <button @click="selectRole('colaborador')" class="role-btn">
           <div class="role-icon">👥</div>
           <h2>Colaborador</h2>
           <p>Accede a eventos donde colaboras</p>
         </button>
+
+        <button @click="goCliente" class="role-btn">
+          <div class="role-icon">🎟️</div>
+          <h2>Mis entradas</h2>
+          <p>Ve tus QRs y transfiérelos</p>
+        </button>
       </div>
-      
+
       <button @click="logout" class="logout-btn">Cerrar sesión</button>
     </div>
   </div>
@@ -27,12 +53,25 @@
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { authService } from '../services/authService';
+import { userService } from '../services/userService';
+import { isAdminEmail } from '../config/appConfig';
 
 const router = useRouter();
 const user = ref(null);
+const isAdmin = ref(false);
+const organizerEnabled = ref(false);
+const loading = ref(true);
 
-onMounted(() => {
-  user.value = authService.getCurrentUser();
+onMounted(async () => {
+  user.value = await authService.waitForAuthReady();
+  if (!user.value) {
+    router.push('/');
+    return;
+  }
+  isAdmin.value = isAdminEmail(user.value.email);
+  await userService.ensureRegistered(user.value);
+  organizerEnabled.value = await userService.isOrganizerEnabled(user.value);
+  loading.value = false;
 });
 
 const selectRole = (role) => {
@@ -42,6 +81,16 @@ const selectRole = (role) => {
   } else {
     router.push('/colaborador');
   }
+};
+
+const goCliente = () => {
+  localStorage.setItem('userRole', 'cliente');
+  router.push('/mis-qrs');
+};
+
+const goAdmin = () => {
+  localStorage.setItem('userRole', 'admin');
+  router.push('/admin');
 };
 
 const logout = async () => {
@@ -67,7 +116,7 @@ const logout = async () => {
   border-radius: 12px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
   text-align: center;
-  max-width: 600px;
+  max-width: 720px;
   width: 100%;
 }
 
@@ -80,6 +129,11 @@ h1 {
 .user-info {
   color: #666;
   margin-bottom: 30px;
+}
+
+.loading {
+  padding: 30px;
+  color: #666;
 }
 
 .role-options {
@@ -99,10 +153,21 @@ h1 {
   text-align: center;
 }
 
-.role-btn:hover {
+.role-btn:hover:not(.disabled) {
   border-color: #667eea;
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+}
+
+.role-btn.admin {
+  border-color: #764ba2;
+  background: #faf7ff;
+}
+
+.role-btn.disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+  background: #f7f7f7;
 }
 
 .role-icon {
@@ -121,6 +186,10 @@ h1 {
   font-size: 0.9rem;
 }
 
+.pending-note {
+  color: #b8860b !important;
+}
+
 .logout-btn {
   width: 100%;
   padding: 12px;
@@ -137,7 +206,6 @@ h1 {
   background: #e0e0e0;
 }
 
-/* Responsive Mobile */
 @media (max-width: 768px) {
   .role-container {
     padding: 15px;
@@ -188,4 +256,3 @@ h1 {
   }
 }
 </style>
-
