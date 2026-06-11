@@ -11,6 +11,12 @@ const routes = [
     meta: { requiresAuth: false }
   },
   {
+    path: '/politica-de-privacidad',
+    name: 'PrivacyPolicy',
+    component: () => import('../views/PrivacyPolicyView.vue'),
+    meta: { requiresAuth: false }
+  },
+  {
     path: '/comprar/:ownerUid/:discotecaId/:eventoId',
     name: 'PublicEvento',
     component: () => import('../views/PublicEventView.vue'),
